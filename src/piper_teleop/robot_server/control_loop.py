@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import os
 import time
@@ -24,6 +25,9 @@ dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Prismatic finger command when gripper is "open" in toggle mode (matches gamepad max gap).
+GRIPPER_FINGER_OPEN_M = 0.07
+
 
 @dataclass
 class ArmState:
@@ -32,6 +36,8 @@ class ArmState:
     origin_transform: np.ndarray = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
     target_transform: np.ndarray | None = None
     gripper_closed: bool = True
+    # Gamepad: incremental opening in metres; None = use gripper_closed / GRIPPER_FINGER_OPEN_M
+    gripper_gap_m: float | None = None
 
 
 class ControlLoop:
@@ -46,10 +52,25 @@ class ControlLoop:
         self.robot_interface = RobotInterface(config)
         self.robot_enabled = config.enable_robot
         self.use_keyboard = config.enable_keyboard
+        self.use_gamepad = config.enable_gamepad
         self.use_leader = config.use_leader
         self.use_policy = config.use_policy
         if self.use_keyboard:
             self.keyboard_controller = KeyboardController()
+        if self.use_gamepad:
+            try:
+                from piper_teleop.robot_server.gamepad_controller import GamepadController
+            except ModuleNotFoundError as e:
+                if getattr(e, "name", None) == "pygame":
+                    raise RuntimeError(
+                        "Gamepad mode needs pygame. Install with: pip install 'pygame>=2.5'"
+                    ) from e
+                raise
+            # One linear speed knob (pos_step); rotation matches via angular_scale_rad_per_m in GamepadController.
+            self.gamepad_controller = GamepadController(
+                max_linear_step=config.pos_step,
+                angular_scale_rad_per_m=2.5,
+            )
         self.visualize = config.enable_visualization
         self.api = TactileAPI(api_key=os.getenv("TACTILE_API_KEY"))
 
@@ -103,8 +124,15 @@ class ControlLoop:
 
             arm_state.target_transform = arm_state.origin_transform @ relative_transform
 
-        arm_state.gripper_closed = arm_goal.gripper_closed
+        if arm_goal.gripper_closed is not None:
+            arm_state.gripper_closed = arm_goal.gripper_closed
         return arm_state
+
+    @staticmethod
+    def _gripper_finger_m(arm: ArmState) -> float:
+        if arm.gripper_gap_m is not None:
+            return float(np.clip(arm.gripper_gap_m, 0.0, GRIPPER_FINGER_OPEN_M))
+        return 0.0 if arm.gripper_closed else GRIPPER_FINGER_OPEN_M
 
     def update_robot_from_leader(self, obs_dict_leader: dict):
         dict_left = obs_dict_leader["left"]
@@ -129,16 +157,28 @@ class ControlLoop:
             left_arm.target_transform, right_arm.target_transform, visualize=self.visualize
         )
 
-        current_gripper_1 = 0.0 if left_arm.gripper_closed else 0.07
-        current_gripper_2 = 0.0 if right_arm.gripper_closed else 0.07
+        current_gripper_1 = self._gripper_finger_m(left_arm)
+        current_gripper_2 = self._gripper_finger_m(right_arm)
 
-        if not is_collision:
+        if ik_solution is None:
+            logger.debug("IK did not converge; keeping last joint targets, still applying gripper.")
+            qa = self.robot_interface.arm_angles
+            joint12 = qa[:12] if len(qa) >= 12 else np.zeros(12)
+            self.robot_interface.update_arm_angles(
+                np.concatenate([joint12, [current_gripper_1, current_gripper_2]])
+            )
+        elif not is_collision:
             self.robot_interface.update_arm_angles(
                 np.concatenate([ik_solution, [current_gripper_1, current_gripper_2]])
             )
         else:
-            print("IK solution results in collision, not updating robot commands.")
-            return
+            # Do not move arm through a bad IK pose, but still apply gripper (keyboard toggle).
+            logger.debug("IK in collision; holding arm pose, applying gripper only.")
+            qa = self.robot_interface.arm_angles
+            joint12 = qa[:12] if len(qa) >= 12 else ik_solution
+            self.robot_interface.update_arm_angles(
+                np.concatenate([joint12, [current_gripper_1, current_gripper_2]])
+            )
 
         ik_time = time.perf_counter() - start_time_ik
 
@@ -166,7 +206,13 @@ class ControlLoop:
         right_arm.origin_transform = right_arm.initial_transform
 
         self.robot_interface.setup_kinematics()
-        await self.api.connect_vr_controller()
+        if self.use_keyboard or self.use_gamepad:
+            logger.info(
+                "Local control (%s): skipping Tactile VR connection (no LiveKit room required).",
+                "keyboard" if self.use_keyboard else "gamepad",
+            )
+        else:
+            await self.api.connect_vr_controller()
         if self.robot_enabled:
             try:
                 self.robot_interface.connect()
@@ -174,8 +220,9 @@ class ControlLoop:
                 logger.error(f"Error connecting to robot: {e}")
                 return
             finally:
+                # One physical follower arm is enough to drive teleop (other side may have no CAN)
                 self.robot_enabled = (
-                    self.robot_interface.left_arm_connected and self.robot_interface.right_arm_connected
+                    self.robot_interface.left_arm_connected or self.robot_interface.right_arm_connected
                 )
         if self.robot_enabled:
             self.robot_interface.return_to_initial_position()
@@ -191,15 +238,40 @@ class ControlLoop:
 
             commands_time = time.perf_counter() - commands_start
 
-            if self.use_keyboard:
-                left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
-                right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
+            if self.use_gamepad:
+                # Gamepad always drives the left-arm goal; the same goal is copied for the right IK chain.
+                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform)
+                right_arm_goal = copy.deepcopy(left_arm_goal)
+            elif self.use_keyboard:
+                # Single follower: only call get_goal for the connected arm (merged WASD+TG keys in
+                # KeyboardController), then duplicate for IK. Otherwise right-column keys would only
+                # move the other arm's joint block, which has no hardware on left_piper-only setups.
+                if self.robot_enabled and self.robot_interface.left_arm_connected and not self.robot_interface.right_arm_connected:
+                    self.keyboard_controller.single_follower_side = "left"
+                    left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
+                    right_arm_goal = copy.deepcopy(left_arm_goal)
+                elif self.robot_enabled and self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
+                    self.keyboard_controller.single_follower_side = "right"
+                    right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
+                    left_arm_goal = copy.deepcopy(right_arm_goal)
+                else:
+                    self.keyboard_controller.single_follower_side = None
+                    left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
+                    right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
             else:
                 left_arm_goal = await self.api.get_controller_goal("left")
                 right_arm_goal = await self.api.get_controller_goal("right")
 
             left_arm = self.update_arm_state(left_arm_goal, left_arm)
             right_arm = self.update_arm_state(right_arm_goal, right_arm)
+
+            if self.use_gamepad:
+                g = self.gamepad_controller.gripper_gap_m
+                left_arm.gripper_gap_m = g
+                right_arm.gripper_gap_m = g
+            else:
+                left_arm.gripper_gap_m = None
+                right_arm.gripper_gap_m = None
 
             if self.config.record or self.use_policy:
                 obs_dict = self.robot_interface.get_observation()
@@ -217,8 +289,10 @@ class ControlLoop:
                     q_2 = [dict_right[k] for k in sorted(dict_right)[:6]]
                     self.robot_interface.ik_solver.vis.display(np.array(q_1 + q_2))
                 if self.robot_enabled:
-                    self.robot_interface.left_robot.send_action(dict_left)
-                    self.robot_interface.right_robot.send_action(dict_right)
+                    if self.robot_interface.left_robot:
+                        self.robot_interface.left_robot.send_action(dict_left)
+                    if self.robot_interface.right_robot:
+                        self.robot_interface.right_robot.send_action(dict_right)
             else:
                 self.update_robot(left_arm, right_arm)
             robot_time = time.perf_counter() - robot_start
@@ -267,7 +341,10 @@ class ControlLoop:
         """Stop the control loop."""
         if self.use_keyboard:
             self.keyboard_controller.stop()
-        await self.api.disconnect_vr_controller()
+        if self.use_gamepad:
+            self.gamepad_controller.stop()
+        if not self.use_keyboard and not self.use_gamepad:
+            await self.api.disconnect_vr_controller()
         if self.robot_enabled:
             self.robot_interface.disconnect()
         if self.use_leader:

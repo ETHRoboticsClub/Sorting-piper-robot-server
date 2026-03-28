@@ -42,33 +42,47 @@ DEFAULT_CONFIG = {
         "hysteresis_threshold": 0.01,
         "movement_penalty_weight": 0.01,
     },
+    # Cameras: default is one wrist + one top-down (both monocular, recording = dataset only; use hybrid if you add VR).
+    # Output tensors use 640x480 (common in LeRobot-style datasets). Capture is 1280x720 so a
+    # RealSense D455 RGB node can run at native color resolution; frames are resized in code.
+    #
+    # Set cam_index for wrist1 and topdown after: python scripts/find_cameras.py
+    #
+    # VR binocular (stereo) option: use a separate "stereo" entry with type "stereo" (one wide
+    # frame split for left/right eye). You can merge this into config.yaml under cameras: —
+    # typically use topdown XOR stereo for the scene view, not both, unless your VR client
+    # expects multiple streams.
+    # VR_BINOCULAR_STEREO_EXAMPLE = {
+    #     "type": "stereo",
+    #     "mode": "hybrid",
+    #     "fps": "60",
+    #     "frame_width": "640",
+    #     "frame_height": "480",
+    #     "capture_frame_width": "3200",
+    #     "capture_frame_height": "1200",
+    #     "capture_api": cv2.CAP_V4L2,
+    #     "cam_index": "<index of wide stereo device>",
+    # }
     "cameras": {
-        "wrist1": {  # Right wrist camera
+        "wrist1": {
+            "type": "monocular",
+            "mode": "recording", # why hybrid and not recording?
+            "fps": "30",
+            "frame_width": "640",
+            "frame_height": "480",
+            "capture_frame_width": "1280", #old 640x 480
+            "capture_frame_height": "720",
+            "capture_api": cv2.CAP_V4L2,
+            "cam_index": "4",
+        },
+        "topdown": {
             "type": "monocular",
             "mode": "recording",
             "fps": "30",
             "frame_width": "640",
             "frame_height": "480",
-            "capture_api": cv2.CAP_V4L2,
-            "cam_index": "4",
-        },
-        "wrist2": {  # Left wrist camera
-            "type": "monocular",
-            "mode": "recording",
-            "fps": "30",
-            "frame_width": "640",
-            "frame_height": "480",
-            "capture_api": cv2.CAP_V4L2,
-            "cam_index": "4",
-        },
-        "stereo": {  # Stereo camera
-            "type": "stereo",
-            "mode": "hybrid",
-            "fps": "60",
-            "frame_width": "640",
-            "frame_height": "480",
-            "capture_frame_width": "3200",  # NOTE: This is hardcoded to the highest resolution as otherwise images are very low quality
-            "capture_frame_height": "1200",  # NOTE: This is hardcoded to the highest resolution as otherwise images are very low quality
+            "capture_frame_width": "1280",
+            "capture_frame_height": "720",
             "capture_api": cv2.CAP_V4L2,
             "cam_index": "8",
         },
@@ -221,7 +235,7 @@ class TelegripConfig:
     repo_id: str = "piper"
     resume: bool = False
     root: Path = Path(__file__).parents[2] / "data"
-    single_arm: bool = False
+    single_arm: bool = True
     cams: Optional[Dict[str, Any]] = None
     dof: int = 7
     fps: int = 30
@@ -238,6 +252,7 @@ class TelegripConfig:
     enable_robot: bool = True
     enable_vr: bool = True
     enable_keyboard: bool = False
+    enable_gamepad: bool = False
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (

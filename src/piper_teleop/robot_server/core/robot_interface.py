@@ -158,11 +158,17 @@ class RobotInterface:
                 logger.error(f"❌ Right arm connection failed: {e}")
                 self.right_arm_connected = False
 
-            # Mark as connected if at least one arm is connected
-            self.is_connected = self.left_arm_connected and self.right_arm_connected
+            # Connected if at least one arm succeeded (single follower arm is supported)
+            self.is_connected = self.left_arm_connected or self.right_arm_connected
 
             if not self.is_connected:
                 logger.error("❌ Failed to connect any robot arms")
+            elif not (self.left_arm_connected and self.right_arm_connected):
+                logger.warning(
+                    "Partial connection: left=%s right=%s — commands send only to connected arm(s).",
+                    self.left_arm_connected,
+                    self.right_arm_connected,
+                )
 
             return self.is_connected
 

@@ -32,9 +32,10 @@ class KeyboardController:
     | Move Right (-Y)     | d             | h            |
     | Move Up (+Z)        | q             | r            |
     | Move Down (-Z)      | e             | z            |
-    | Toggle Gripper      | space         | enter        |
+    | Toggle Gripper      | space or v    | enter or n   |
     | Reset Position      | x             | b            |
     ----------------------------------------------------
+    (Use v / n if Space is captured by your OS or terminal.)
     """
 
     def __init__(self, trans_step=0.01):
@@ -54,6 +55,10 @@ class KeyboardController:
         self.origin_transforms = {"left": None, "right": None}
 
         self._pressed_keys = set()
+        # When only one physical follower is connected: "left" = only left_piper, "right" = only right_piper.
+        # Then both keyboard columns move that arm (otherwise WASD moves left IK block and TG moves right IK block).
+        self.single_follower_side: str | None = None
+
         self.listener_thread = threading.Thread(target=self._listen, daemon=True)
         self.listener_thread.start()
 
@@ -67,14 +72,24 @@ class KeyboardController:
         self._pressed_keys.add(key)
         try:
             # Handle state changes that only happen once per press (toggles)
-            if key == keyboard.Key.space:
-                self.states["left"].gripper_closed = not self.states["left"].gripper_closed
-                status = "Closed" if self.states["left"].gripper_closed else "Open"
-                print(f"Left gripper: {status}")
-            elif key == keyboard.Key.enter:
-                self.states["right"].gripper_closed = not self.states["right"].gripper_closed
-                status = "Closed" if self.states["right"].gripper_closed else "Open"
-                print(f"Right gripper: {status}")
+            if key == keyboard.Key.space or getattr(key, "char", None) == "v":
+                if self.single_follower_side == "right":
+                    self.states["right"].gripper_closed = not self.states["right"].gripper_closed
+                    status = "Closed" if self.states["right"].gripper_closed else "Open"
+                    print(f"Gripper (right arm): {status}")
+                else:
+                    self.states["left"].gripper_closed = not self.states["left"].gripper_closed
+                    status = "Closed" if self.states["left"].gripper_closed else "Open"
+                    print(f"Left gripper: {status}")
+            elif key == keyboard.Key.enter or getattr(key, "char", None) == "n":
+                if self.single_follower_side == "left":
+                    self.states["left"].gripper_closed = not self.states["left"].gripper_closed
+                    status = "Closed" if self.states["left"].gripper_closed else "Open"
+                    print(f"Gripper (left arm): {status}")
+                else:
+                    self.states["right"].gripper_closed = not self.states["right"].gripper_closed
+                    status = "Closed" if self.states["right"].gripper_closed else "Open"
+                    print(f"Right gripper: {status}")
             elif key.char == "x":
                 self.states["left"].reset_to_init = True
                 print("--- Resetting Left arm ---")
@@ -139,6 +154,20 @@ class KeyboardController:
                 translation[2] += self.trans_step
             if keyboard.KeyCode.from_char("e") in keys:
                 translation[2] -= self.trans_step
+            # Single follower on left_piper: right column also moves this arm (same IK joint block)
+            if self.single_follower_side == "left":
+                if keyboard.KeyCode.from_char("t") in keys:
+                    translation[0] += self.trans_step
+                if keyboard.KeyCode.from_char("g") in keys:
+                    translation[0] -= self.trans_step
+                if keyboard.KeyCode.from_char("f") in keys:
+                    translation[1] += self.trans_step
+                if keyboard.KeyCode.from_char("h") in keys:
+                    translation[1] -= self.trans_step
+                if keyboard.KeyCode.from_char("r") in keys:
+                    translation[2] += self.trans_step
+                if keyboard.KeyCode.from_char("z") in keys:
+                    translation[2] -= self.trans_step
         elif arm_name == "right":
             if keyboard.KeyCode.from_char("t") in keys:
                 translation[0] += self.trans_step
@@ -152,6 +181,19 @@ class KeyboardController:
                 translation[2] += self.trans_step
             if keyboard.KeyCode.from_char("z") in keys:
                 translation[2] -= self.trans_step
+            if self.single_follower_side == "right":
+                if keyboard.KeyCode.from_char("w") in keys:
+                    translation[0] += self.trans_step
+                if keyboard.KeyCode.from_char("s") in keys:
+                    translation[0] -= self.trans_step
+                if keyboard.KeyCode.from_char("a") in keys:
+                    translation[1] += self.trans_step
+                if keyboard.KeyCode.from_char("d") in keys:
+                    translation[1] -= self.trans_step
+                if keyboard.KeyCode.from_char("q") in keys:
+                    translation[2] += self.trans_step
+                if keyboard.KeyCode.from_char("e") in keys:
+                    translation[2] -= self.trans_step
 
         # If there is movement, update the internal target transform
         if np.any(translation):

@@ -64,6 +64,12 @@ def main():
     parser.add_argument(
         "--keyboard", action="store_true", default=False, help="Enable keyboard control (defaults to False)"
     )
+    parser.add_argument(
+        "--gamepad",
+        action="store_true",
+        default=False,
+        help="Enable USB gamepad / joystick control (6-DOF EE + gripper); skips VR like --keyboard",
+    )
     parser.add_argument("--record", action="store_true", help="Enable recording")
     parser.add_argument("--resume", action="store_true", help="Resume recording")
     parser.add_argument("--repo-id", type=str, default="default-piper", help="repo_id for dataset storage")
@@ -74,6 +80,11 @@ def main():
         default="info",
         choices=["debug", "info", "warning", "error", "critical"],
         help="Set logging level",
+    )
+    parser.add_argument(
+        "--no-cameras",
+        action="store_true",
+        help="Do not start any camera capture (useful for keyboard + --vis when cameras are unavailable)",
     )
     args = parser.parse_args()
 
@@ -87,15 +98,22 @@ def main():
     config.resume = args.resume
     config.repo_id = args.repo_id
     config.enable_keyboard = args.keyboard
+    config.enable_gamepad = args.gamepad
     config.use_leader = args.leader
     config.use_policy = args.policy
     config.root = config.root / f'{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
 
+    if args.no_cameras:
+        config.camera_configs = []
+
     if config.use_policy:
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
+        assert not args.gamepad, "Gamepad control cannot be used when policy control is enabled"
         assert not args.record, "Recording cannot be used when policy control is enabled"
         assert not args.resume, "Resume recording cannot be used when policy control is enabled"
         assert not args.leader, "Leader control cannot be used when policy control is enabled"
+
+    assert not (args.keyboard and args.gamepad), "Use only one of --keyboard or --gamepad"
 
     if config.record:
         num_recording_cams = 0

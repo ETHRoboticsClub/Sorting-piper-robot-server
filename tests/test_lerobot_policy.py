@@ -17,11 +17,10 @@ def test_predict_action():
     left_joints = {f"joint_{i}.pos": np.random.randn() for i in range(7)}
     right_joints = {f"joint_{i}.pos": np.random.randn() for i in range(7)}
 
-    # Create dummy camera images (H, W, C format with uint8 values)
+    # Create dummy camera images (H, W, C format with uint8 values). Keys must match the policy dataset.
     cams = {
         "observation.images.wrist1": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
-        "observation.images.wrist2": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
-        "observation.images.stereo": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
+        "observation.images.topdown": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
     }
 
     # Predict action
