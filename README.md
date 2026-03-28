@@ -27,7 +27,7 @@ pip install -e .
 
 # Install piper server
 cd ..
-git clone https://github.com/ETHRoboticsClub/piper-robot-server.git
+git clone https://github.com/ETHRoboticsClub/Sorting-piper-robot-server.git  # Or do with ssh
 cd piper-robot-server
 pip install -e .
 conda install pinocchio==3.2.0 casadi==3.6.7 -c conda-forge
