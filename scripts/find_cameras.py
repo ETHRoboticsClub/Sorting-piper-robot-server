@@ -55,6 +55,9 @@ def preview_cameras(camera_indices):
         print("No cameras found!")
         return
 
+    # Brief pause so V4L2 devices can be re-opened after the discovery scan.
+    time.sleep(0.5)
+
     print(f"Found {len(camera_indices)} camera(s): {camera_indices}")
     print("\nStarting camera preview...")
     print("Each camera will be shown for 3 seconds.")
@@ -70,10 +73,12 @@ def preview_cameras(camera_indices):
             continue
 
         # Show camera feed for a few seconds
+        window_shown = False
         start_time = time.time()
         while time.time() - start_time < 3:  # Show for 3 seconds
             ret, frame = cap.read()
             if ret:
+                window_shown = True
                 # Add text overlay to identify the camera
                 cv2.putText(
                     frame,
@@ -109,7 +114,11 @@ def preview_cameras(camera_indices):
                 break
 
         cap.release()
-        cv2.destroyWindow(f"Camera {index} Preview")
+        if window_shown:
+            try:
+                cv2.destroyWindow(f"Camera {index} Preview")
+            except cv2.error:
+                pass
         time.sleep(0.5)  # Brief pause between cameras
 
 
@@ -135,7 +144,7 @@ def main():
         print("Only one camera found. You can use index 0 for your script.")
 
     print(f"\nSummary: Available camera indices are: {available_cameras}")
-    print("Use these indices in your show_both_cameras.py script.")
+    print("Set cam_index for wrist1 and topdown in src/piper_teleop/config.py or config.yaml.")
 
     cv2.destroyAllWindows()
 
