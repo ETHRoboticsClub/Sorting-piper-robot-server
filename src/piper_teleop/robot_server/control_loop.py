@@ -66,10 +66,11 @@ class ControlLoop:
                         "Gamepad mode needs pygame. Install with: pip install 'pygame>=2.5'"
                     ) from e
                 raise
-            # One linear speed knob (pos_step); rotation matches via angular_scale_rad_per_m in GamepadController.
+            # Translation: pos_step; rotation: angle_step (deg/frame at full stick).
             self.gamepad_controller = GamepadController(
                 max_linear_step=config.pos_step,
-                angular_scale_rad_per_m=2.5,
+                angle_step=config.angle_step,
+                rotation_world_frame=config.gamepad_rotation_world_frame,
             )
         self.visualize = config.enable_visualization
         self.api = TactileAPI(api_key=os.getenv("TACTILE_API_KEY"))
@@ -101,6 +102,18 @@ class ControlLoop:
         if self.use_leader:
             self.robot_leader = PiperLeader()
 
+    def _record_side_for_single_arm(self) -> str:
+        """Which arm to log when config.single_arm (matches dataset 7-D features)."""
+        cfg = self.config.single_arm_record_side
+        if cfg == "right":
+            return "right"
+        if cfg == "left":
+            return "left"
+        # auto: mirror README — only right follower → use right; otherwise left
+        if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
+            return "right"
+        return "left"
+
     def update_arm_state(self, arm_goal, arm_state: ArmState) -> ArmState:
         if arm_goal.reset_to_init:
             arm_state.target_transform = arm_state.initial_transform
@@ -116,12 +129,12 @@ class ControlLoop:
         elif arm_goal.relative_transform is not None:
             relative_transform = arm_goal.relative_transform
 
-            # Coordinate transform to local robot frame
-            transformation_matrix = np.eye(4)
-            transformation_matrix[:3, :3] = arm_state.origin_transform[:3, :3]
-
-            relative_transform = np.linalg.inv(transformation_matrix) @ (relative_transform @ transformation_matrix)
-
+            # Gamepad goals accumulate target in world frame; relative = inv(origin) @ target is already correct.
+            # Keyboard/VR: relative is in body-local frame; conjugate to world before composing.
+            if not self.use_gamepad:
+                transformation_matrix = np.eye(4)
+                transformation_matrix[:3, :3] = arm_state.origin_transform[:3, :3]
+                relative_transform = np.linalg.inv(transformation_matrix) @ (relative_transform @ transformation_matrix)
             arm_state.target_transform = arm_state.origin_transform @ relative_transform
 
         if arm_goal.gripper_closed is not None:
@@ -305,6 +318,9 @@ class ControlLoop:
                     left_joints_target=action_dict["left"],
                     right_joints_target=action_dict["right"],
                     cams=cams,
+                    record_side=self._record_side_for_single_arm()
+                    if self.config.single_arm
+                    else "left",
                 )
                 self.recorder.handle_keyboard_event()
                 if self.config.display_data:

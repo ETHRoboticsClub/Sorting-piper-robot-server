@@ -169,6 +169,59 @@ def test_create_dataset(tmp_path):
     assert root.exists() == True
 
 
+def test_add_observation_single_arm_shapes(tmp_path):
+    """Single-arm datasets expect 7-D state/action; add_observation must not stack both arms."""
+    root = tmp_path / "lerobot"
+    cameras = [CameraConfig(name="wrist", frame_width=64, frame_height=48)]
+    rec = Recorder(
+        repo_id="test",
+        root=root,
+        single_arm=True,
+        task="test",
+        play_sound=False,
+        cameras=cameras,
+    )
+    rec._create_dataset()
+    rec.state = RecState.RECORDING
+    img = np.zeros((48, 64, 3), dtype=np.uint8)
+    left_joints = {f"joint_{j}.pos": float(j) for j in range(7)}
+    right_joints = {f"joint_{j}.pos": float(j + 10) for j in range(7)}
+    left_tgt = {f"joint_{j}.pos": float(j + 0.5) for j in range(7)}
+    right_tgt = {f"joint_{j}.pos": float(j + 10.5) for j in range(7)}
+    last_frame = {}
+    _orig_add_frame = rec.dataset.add_frame
+
+    def capture_add_frame(frame):
+        last_frame.clear()
+        last_frame.update(frame)
+        return _orig_add_frame(frame)
+
+    rec.dataset.add_frame = capture_add_frame  # type: ignore[method-assign]
+
+    rec.add_observation(
+        left_joints=left_joints,
+        right_joints=right_joints,
+        left_joints_target=left_tgt,
+        right_joints_target=right_tgt,
+        cams={"observation.images.wrist": img},
+        record_side="left",
+    )
+    assert last_frame["observation.state"].shape == (7,)
+    assert last_frame["action"].shape == (7,)
+    np.testing.assert_allclose(last_frame["observation.state"], np.arange(7, dtype=np.float32))
+
+    rec.add_observation(
+        left_joints=left_joints,
+        right_joints=right_joints,
+        left_joints_target=left_tgt,
+        right_joints_target=right_tgt,
+        cams={"observation.images.wrist": img},
+        record_side="right",
+    )
+    assert last_frame["observation.state"].shape == (7,)
+    np.testing.assert_allclose(last_frame["observation.state"], np.arange(10, 17, dtype=np.float32))
+
+
 def test_rerecord(tmp_path):
     root = tmp_path / "lerobot"
     cameras = [CameraConfig(name="left", frame_width=640, frame_height=480)]

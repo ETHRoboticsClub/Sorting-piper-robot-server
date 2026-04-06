@@ -90,6 +90,24 @@ def xyzrpy2transform(x: float, y: float, z: float, roll: float, pitch: float, ya
     return transformation_matrix
 
 
+def apply_delta_world_frame(target: np.ndarray, delta: np.ndarray) -> None:
+    """Apply incremental delta in world/base frame (in-place).
+
+    Translation is added in world coordinates. Rotation is world-fixed: ``R_new = R_delta @ R_old``.
+    """
+    target[:3, 3] = target[:3, 3] + delta[:3, 3]
+    target[:3, :3] = delta[:3, :3] @ target[:3, :3]
+
+
+def apply_delta_world_trans_ee_rot(target: np.ndarray, delta: np.ndarray) -> None:
+    """Hybrid teleop (in-place): translate in world frame; rotate in end-effector frame.
+
+    ``t_new = t_old + delta_t`` (world). ``R_new = R_old @ R_delta`` (local / wrist-style).
+    """
+    target[:3, 3] = target[:3, 3] + delta[:3, 3]
+    target[:3, :3] = target[:3, :3] @ delta[:3, :3]
+
+
 def convert_to_robot_convention(transform_vr: np.ndarray) -> np.ndarray:
     """Convert position and quaternion to robot convention."""
 

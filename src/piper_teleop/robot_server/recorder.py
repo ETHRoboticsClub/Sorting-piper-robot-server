@@ -149,19 +149,32 @@ class Recorder:
         left_joints_target,
         right_joints_target,
         cams: dict[str, np.ndarray],
+        *,
+        record_side: str = "left",
     ) -> None:
         if self.state == RecState.RECORDING:
-
-            state = np.array(
-                [left_joints[f"joint_{i}.pos"] for i in range(self.dof)]
-                + [right_joints[f"joint_{i}.pos"] for i in range(self.dof)],
-                dtype=np.float32,
-            )
-            target = np.array(
-                [left_joints_target[f"joint_{i}.pos"] for i in range(self.dof)]
-                + [right_joints_target[f"joint_{i}.pos"] for i in range(self.dof)],
-                dtype=np.float32,
-            )
+            if self.single_arm:
+                j_obs = left_joints if record_side == "left" else right_joints
+                j_tgt = left_joints_target if record_side == "left" else right_joints_target
+                state = np.array(
+                    [j_obs[f"joint_{i}.pos"] for i in range(self.dof)],
+                    dtype=np.float32,
+                )
+                target = np.array(
+                    [j_tgt[f"joint_{i}.pos"] for i in range(self.dof)],
+                    dtype=np.float32,
+                )
+            else:
+                state = np.array(
+                    [left_joints[f"joint_{i}.pos"] for i in range(self.dof)]
+                    + [right_joints[f"joint_{i}.pos"] for i in range(self.dof)],
+                    dtype=np.float32,
+                )
+                target = np.array(
+                    [left_joints_target[f"joint_{i}.pos"] for i in range(self.dof)]
+                    + [right_joints_target[f"joint_{i}.pos"] for i in range(self.dof)],
+                    dtype=np.float32,
+                )
             frame = {"observation.state": state,
                      "action": target,
                      "task": self.task,

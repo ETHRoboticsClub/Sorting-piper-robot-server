@@ -13,7 +13,11 @@ import numpy as np
 import pygame
 from tactile_teleop_sdk.inputs.base import ArmGoal
 
-from piper_teleop.robot_server.core.geometry import apply_delta_world_frame, xyzrpy2transform
+from piper_teleop.robot_server.core.geometry import (
+    apply_delta_world_frame,
+    apply_delta_world_trans_ee_rot,
+    xyzrpy2transform,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +36,9 @@ class GamepadController:
 
     - Left stick → planar motion (axes 0/1), swapped to world X/Y; L2/R2 → Z.
     - R1/L1 → yaw (R1−L1); right stick ↔ = roll, ↕ = pitch.
-    - Motion: **fully world frame** (translation + rotation), see ``apply_delta_world_frame``.
+    - Translation (X/Y/Z) always in **world** frame.
+    - Rotations: **end-effector** frame by default, or **world** frame if ``rotation_world_frame=True``
+      (``apply_delta_world_trans_ee_rot`` vs ``apply_delta_world_frame``).
     - Cross = gripper fully closed; Circle = fully open; Square = reset pose.
     """
 
@@ -42,8 +48,10 @@ class GamepadController:
         angle_step: float = 5.0,
         deadzone: float = 0.12,
         joystick_index: int = 0,
+        rotation_world_frame: bool = False,
     ):
         self.max_linear_step = max_linear_step
+        self._rotation_world_frame = bool(rotation_world_frame)
         self._lin_step = float(max_linear_step * 0.8)
         self._rot_step_rad = float(np.deg2rad(angle_step))
         self.deadzone = deadzone
@@ -73,11 +81,12 @@ class GamepadController:
         self.joystick = pygame.joystick.Joystick(joystick_index)
         self.joystick.init()
         logger.info(
-            "Gamepad: %s (axes=%s, buttons=%s, hats=%s)",
+            "Gamepad: %s (axes=%s, buttons=%s, hats=%s); rotation=%s",
             self.joystick.get_name(),
             self.joystick.get_numaxes(),
             self.joystick.get_numbuttons(),
             self.joystick.get_numhats(),
+            "world" if self._rotation_world_frame else "end-effector",
         )
         self._initialized = True
 
@@ -174,7 +183,10 @@ class GamepadController:
         delta = self._delta_transform()
 
         if np.any(delta != np.eye(4)) and self._target_transform is not None:
-            apply_delta_world_frame(self._target_transform, delta)
+            if self._rotation_world_frame:
+                apply_delta_world_frame(self._target_transform, delta)
+            else:
+                apply_delta_world_trans_ee_rot(self._target_transform, delta)
 
         arm_goal = ArmGoal(arm="left", gripper_closed=(self.gripper_gap_m <= 1e-6))
         if self._origin_transform is not None and self._target_transform is not None:

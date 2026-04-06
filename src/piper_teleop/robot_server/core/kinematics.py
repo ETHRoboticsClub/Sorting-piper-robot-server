@@ -141,7 +141,7 @@ class Arm_IK:
         self._add_ground_plane()
         self._init_collision_pairs()
 
-        self.first_matrix = create_transformation_matrix(0, 0, 0, 0, -1.57, 0)
+        self.first_matrix = create_transformation_matrix(0, 0, 0, 0, -1.57, 0.0) #self.first_matrix = create_transformation_matrix(0, 0, 0, 0, -1.57, 0) original, adjusted to keep jaw at 0 , perhaps a mounting issue
         # Transform from joint6 to end-effector gripper coordinates
         self.second_matrix = create_transformation_matrix(0.13, 0.0, 0.0, 0, 0, 0)
         self.last_matrix = np.dot(self.first_matrix, self.second_matrix)

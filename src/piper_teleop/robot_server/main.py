@@ -70,6 +70,12 @@ def main():
         default=False,
         help="Enable USB gamepad / joystick control (6-DOF EE + gripper); skips VR like --keyboard",
     )
+    parser.add_argument(
+        "--ee-world",
+        action="store_true",
+        dest="ee_world",
+        help="With --gamepad: apply rotations in world/base frame (default: end-effector frame)",
+    )
     parser.add_argument("--record", action="store_true", help="Enable recording")
     parser.add_argument("--resume", action="store_true", help="Resume recording")
     parser.add_argument("--repo-id", type=str, default="default-piper", help="repo_id for dataset storage")
@@ -99,6 +105,9 @@ def main():
     config.repo_id = args.repo_id
     config.enable_keyboard = args.keyboard
     config.enable_gamepad = args.gamepad
+    if args.ee_world:
+        assert args.gamepad, "--ee-world requires --gamepad"
+    config.gamepad_rotation_world_frame = args.ee_world
     config.use_leader = args.leader
     config.use_policy = args.policy
     config.root = config.root / f'{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
@@ -109,11 +118,13 @@ def main():
     if config.use_policy:
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
         assert not args.gamepad, "Gamepad control cannot be used when policy control is enabled"
+        assert not args.ee_world, "--ee-world cannot be used when policy control is enabled"
         assert not args.record, "Recording cannot be used when policy control is enabled"
         assert not args.resume, "Resume recording cannot be used when policy control is enabled"
         assert not args.leader, "Leader control cannot be used when policy control is enabled"
 
-    assert not (args.keyboard and args.gamepad), "Use only one of --keyboard or --gamepad"
+    num_local_modes = int(args.keyboard) + int(args.gamepad)
+    assert num_local_modes <= 1, "Use only one of --keyboard or --gamepad"
 
     if config.record:
         num_recording_cams = 0

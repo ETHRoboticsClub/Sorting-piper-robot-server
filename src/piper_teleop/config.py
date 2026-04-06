@@ -236,6 +236,8 @@ class TelegripConfig:
     resume: bool = False
     root: Path = Path(__file__).parents[2] / "data"
     single_arm: bool = True
+    # When single_arm: which arm's joints go into LeRobot state/action ("auto" = only right if only right connected, else left).
+    single_arm_record_side: str = "auto"
     cams: Optional[Dict[str, Any]] = None
     dof: int = 7
     fps: int = 30
@@ -253,6 +255,8 @@ class TelegripConfig:
     enable_vr: bool = True
     enable_keyboard: bool = False
     enable_gamepad: bool = False
+    # When True (CLI --ee-world): gamepad rotation uses world/base frame; False = end-effector frame.
+    gamepad_rotation_world_frame: bool = False
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (

@@ -22,6 +22,8 @@ class KeyboardController:
     of two separate robot arms using different sets of keys. It internally
     tracks the target position for each arm to allow for continuous movement.
 
+    Translation steps are in the **world / base** frame (not along the end-effector axes).
+
     Key Mappings:
     ----------------------------------------------------
     | Action              | Left Arm      | Right Arm    |
@@ -195,14 +197,11 @@ class KeyboardController:
                 if keyboard.KeyCode.from_char("e") in keys:
                     translation[2] -= self.trans_step
 
-        # If there is movement, update the internal target transform
+        # If there is movement, update the internal target transform (translation in **world** frame).
         if np.any(translation):
-            # Create a small transformation step
-            step_transform = np.eye(4)
-            step_transform[:3, 3] = translation
-            # Apply the step to the current target to get the new target.
-            # This makes the movement relative to the arm's current position and orientation.
-            self.target_transforms[arm_name] = self.target_transforms[arm_name] @ step_transform
+            self.target_transforms[arm_name][:3, 3] = (
+                self.target_transforms[arm_name][:3, 3] + translation
+            )
 
         # Calculate the transform relative to the origin, which the control loop expects
         origin = self.origin_transforms[arm_name]
