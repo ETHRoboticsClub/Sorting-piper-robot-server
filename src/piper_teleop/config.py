@@ -7,12 +7,12 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import cv2
 import yaml
 
-from piper_teleop.robot_server.camera import CameraConfig, CameraMode, CameraType, from_config
+from piper_teleop.robot_server.camera.camera_config import CameraConfig, from_config
 from piper_teleop.utils import get_absolute_path
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ DEFAULT_CONFIG = {
         "vr": {"enabled": True},
         "pybullet": {"enabled": True},
     },
-    "paths": {"urdf_path": "URDF/Piper/dual_piper.urdf"},
+    "paths": {"urdf_path": "URDF/Piper/dual_piper.urdf", "deposit_pose_file": "data/deposit_pose.yaml"},
     "gripper": {"open_angle": 0.0, "closed_angle": 45.0},
     "ik": {
         "use_reference_poses": False,
@@ -46,7 +46,10 @@ DEFAULT_CONFIG = {
     # Output tensors use 640x480 (common in LeRobot-style datasets). Capture is 1280x720 so a
     # RealSense D455 RGB node can run at native color resolution; frames are resized in code.
     #
-    # Set cam_index for wrist1 and topdown after: python scripts/find_cameras.py
+    # OpenCV cameras: set cam_index after `python scripts/find_cameras.py`.
+    # RealSense cameras: set backend="realsense" and serial_number after
+    # `python scripts/find_realsense_cameras.py`. That binds each logical camera
+    # to a device deterministically instead of relying on /dev/video* ordering.
     #
     # VR binocular (stereo) option: use a separate "stereo" entry with type "stereo" (one wide
     # frame split for left/right eye). You can merge this into config.yaml under cameras: —
@@ -72,6 +75,7 @@ DEFAULT_CONFIG = {
             "frame_height": "480",
             "capture_frame_width": "1280", #old 640x 480
             "capture_frame_height": "720",
+            "backend": "opencv",
             "capture_api": cv2.CAP_V4L2,
             "cam_index": "4",
         },
@@ -83,6 +87,7 @@ DEFAULT_CONFIG = {
             "frame_height": "480",
             "capture_frame_width": "1280",
             "capture_frame_height": "720",
+            "backend": "opencv",
             "capture_api": cv2.CAP_V4L2,
             "cam_index": "8",
         },
@@ -166,6 +171,7 @@ ANGLE_STEP = _config_data["control"]["keyboard"]["angle_step"]
 GRIPPER_STEP = _config_data["control"]["keyboard"]["gripper_step"]
 
 URDF_PATH = _config_data["paths"]["urdf_path"]
+DEPOSIT_POSE_FILE = _config_data["paths"]["deposit_pose_file"]
 
 GRIPPER_OPEN_ANGLE = _config_data["gripper"]["open_angle"]
 GRIPPER_CLOSED_ANGLE = _config_data["gripper"]["closed_angle"]
@@ -246,6 +252,7 @@ class TelegripConfig:
     use_video = False
     convert_images_to_video = False  # Post-processing option when use_video=False. If True, converts the PNG frames to video format after recording completes.
     display_data = False
+    show_camera_feeds: bool = False
     image_writer_processes = 0
     image_writer_threads = 12
     # Control flags
@@ -269,6 +276,7 @@ class TelegripConfig:
 
     # Paths
     urdf_path: str = URDF_PATH
+    deposit_pose_file: str = DEPOSIT_POSE_FILE
 
     # IK settings
     use_reference_poses: bool = USE_REFERENCE_POSES
@@ -319,6 +327,10 @@ class TelegripConfig:
     def get_absolute_urdf_path(self) -> str:
         """Get absolute path to URDF file."""
         return str(get_absolute_path(self.urdf_path))
+
+    def get_absolute_deposit_pose_path(self) -> str:
+        """Get absolute path to deposit pose file."""
+        return str(get_absolute_path(self.deposit_pose_file))
 
     def get_absolute_reference_poses_path(self) -> str:
         """Get absolute path to reference poses file."""

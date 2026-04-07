@@ -29,6 +29,7 @@ def _camera_process_wrapper(
         camera_streamer = CameraStreamer(
             configs=config.camera_configs,
             shared_data=shared_data,
+            show_camera_feeds=config.show_camera_feeds,
         )
         await camera_streamer.start(config.livekit_room, config.camera_streamer_participant)
 
@@ -92,6 +93,11 @@ def main():
         action="store_true",
         help="Do not start any camera capture (useful for keyboard + --vis when cameras are unavailable)",
     )
+    parser.add_argument(
+        "--show-cameras",
+        action="store_true",
+        help="Show local preview windows for configured cameras while robotserver is running",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -110,6 +116,7 @@ def main():
     config.gamepad_rotation_world_frame = args.ee_world
     config.use_leader = args.leader
     config.use_policy = args.policy
+    config.show_camera_feeds = args.show_cameras
     config.root = config.root / f'{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
 
     if args.no_cameras:

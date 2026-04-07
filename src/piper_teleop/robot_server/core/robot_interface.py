@@ -310,7 +310,7 @@ class RobotInterface:
         except Exception as e:
             logger.error(f"Error returning to initial position: {e}")
 
-    def disconnect(self):
+    def disconnect(self, return_to_initial: bool = True):
         """Disconnect from robot hardware."""
         if not self.is_connected:
             return
@@ -318,7 +318,7 @@ class RobotInterface:
         logger.info("Disconnecting from robot...")
 
         # Return to initial positions if engaged
-        if self.is_enabled:
+        if self.is_enabled and return_to_initial:
             try:
                 self.return_to_initial_position()
             except Exception as e:

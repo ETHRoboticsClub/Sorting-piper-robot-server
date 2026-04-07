@@ -26,6 +26,7 @@ GRIPPER_OPEN_M = 0.07
 _BTN_CROSS = 0
 _BTN_CIRCLE = 1
 _BTN_SQUARE = 2
+_BTN_TRIANGLE = 3
 _BTN_L1 = 4
 _BTN_R1 = 5
 
@@ -40,6 +41,7 @@ class GamepadController:
     - Rotations: **end-effector** frame by default, or **world** frame if ``rotation_world_frame=True``
       (``apply_delta_world_trans_ee_rot`` vs ``apply_delta_world_frame``).
     - Cross = gripper fully closed; Circle = fully open; Square = reset pose.
+    - Triangle = deposit pose loaded from the configured deposit pose file.
     """
 
     def __init__(
@@ -156,7 +158,11 @@ class GamepadController:
         pitch = self._stick_axis(4) * self._rot_step_rad
         return xyzrpy2transform(tx, ty, tz, roll, pitch, yaw)
 
-    def get_goal(self, current_left_target_transform: np.ndarray) -> ArmGoal:
+    def get_goal(
+        self,
+        current_left_target_transform: np.ndarray,
+        deposit_transform: np.ndarray | None = None,
+    ) -> ArmGoal:
         self._pump()
         if self.joystick is None:
             return ArmGoal(arm="left", gripper_closed=True)
@@ -177,8 +183,15 @@ class GamepadController:
         if self._button(_BTN_SQUARE):
             if self._origin_transform is not None and self._target_transform is not None:
                 self._target_transform = self._origin_transform.copy()
-            self._gripper_gap_m = 0.0
-            return ArmGoal(arm="left", gripper_closed=True, reset_to_init=True)
+            self._gripper_gap_m = GRIPPER_OPEN_M
+            return ArmGoal(arm="left", gripper_closed=False, reset_to_init=True)
+
+        if self._button(_BTN_TRIANGLE):
+            if deposit_transform is not None and self._target_transform is not None and self._origin_transform is not None:
+                self._target_transform = deposit_transform.copy()
+                arm_goal = ArmGoal(arm="left", gripper_closed=(self.gripper_gap_m <= 1e-6))
+                arm_goal.relative_transform = np.linalg.inv(self._origin_transform) @ self._target_transform
+                return arm_goal
 
         delta = self._delta_transform()
 

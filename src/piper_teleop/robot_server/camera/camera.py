@@ -10,7 +10,9 @@ class Camera(abc.ABC):
     def __init__(self, camera_config: CameraConfig):
         self.name = camera_config.name
         self.logger = logging.getLogger(self.name)
+        self.type = camera_config.type
         self.mode = camera_config.mode
+        self.backend = camera_config.backend
         self.fps = camera_config.fps
         self.frame_width = camera_config.frame_width
         self.frame_height = camera_config.frame_height
@@ -19,6 +21,7 @@ class Camera(abc.ABC):
         self.capture_api = camera_config.capture_api
         self.capture_frame_width = camera_config.capture_frame_width
         self.capture_frame_height = camera_config.capture_frame_height
+        self.serial_number = camera_config.serial_number
 
     @abc.abstractmethod
     def get_cropped_width(self) -> int:

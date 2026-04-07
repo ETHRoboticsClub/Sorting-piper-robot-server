@@ -26,7 +26,13 @@ def _replace_dict_str(data, a, b):
     else:
         # nothing to do?
         return data
-def convert_image_dataset_to_video(root: Path | str, batch_parquet=50, image_writer_processes=0, image_writer_threads=12):
+def convert_image_dataset_to_video(
+    root: Path | str,
+    batch_parquet=50,
+    image_writer_processes=0,
+    image_writer_threads=12,
+    output_root: Path | str | None = None,
+):
     path = Path(root)
     if not (path / INFO_PATH).is_file():
         raise FileNotFoundError(f"Not a LeRobot dataset root (missing {INFO_PATH}): {path}")
@@ -35,7 +41,7 @@ def convert_image_dataset_to_video(root: Path | str, batch_parquet=50, image_wri
     info = load_info(path)
     tasks_df = load_tasks(path)
     features_new = _replace_dict_str(info["features"], "image", "video")
-    out_root = path.with_name(path.name + "_video")
+    out_root = Path(output_root) if output_root is not None else path.with_name(path.name + "_video")
     new_dataset = LeRobotDataset.create(
         repo_id=_LOCAL_VIDEO_EXPORT_REPO_ID,
         root=out_root,

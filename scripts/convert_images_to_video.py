@@ -25,6 +25,12 @@ Examples:
     )
 
     parser.add_argument("dataset_path", type=str, help="Path to the dataset directory to convert")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional output directory. Defaults to <dataset_path>_video",
+    )
 
     parser.add_argument("--dry-run", action="store_true", help="Show what would be converted without actually doing it")
 
@@ -35,8 +41,16 @@ Examples:
     if args.dry_run:
         print("DRY RUN MODE - No changes will be made")
         print(f"Would convert dataset at: {dataset_path}")
+        if args.output:
+            print(f"Would write converted dataset to: {Path(args.output).expanduser().resolve()}")
         return
-    convert_image_dataset_to_video(dataset_path, image_writer_processes=2, image_writer_threads=12)
+    output_path = Path(args.output).expanduser().resolve() if args.output else None
+    convert_image_dataset_to_video(
+        dataset_path,
+        image_writer_processes=2,
+        image_writer_threads=12,
+        output_root=output_path,
+    )
 
 
 if __name__ == "__main__":

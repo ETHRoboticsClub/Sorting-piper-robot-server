@@ -86,6 +86,8 @@ cert.pem
 camera_streaming/calibration
 .cursor/
 .claude/
+.codex
+outputs/
 .flake8
 data/
 # generated files

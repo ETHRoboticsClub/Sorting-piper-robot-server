@@ -1,10 +1,8 @@
 from piper_teleop.robot_server.camera import (
     CameraConfig,
     CameraMode,
-    CameraType,
-    MonocularCamera,
     SharedCameraData,
-    StereoCamera,
+    create_camera,
 )
 
 
@@ -15,9 +13,6 @@ class CameraRecorder:
 
         for config in configs:
             if config.mode == CameraMode.RECORDING or config.mode == CameraMode.HYBRID:
-                if config.type == CameraType.STEREO:
-                    self.cameras.append(StereoCamera(config))
-                elif config.type == CameraType.MONOCULAR:
-                    self.cameras.append(MonocularCamera(config))
+                self.cameras.append(create_camera(config))
 
         self.shared_data = shared_data

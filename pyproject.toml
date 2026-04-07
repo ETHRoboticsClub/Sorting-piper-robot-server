@@ -14,6 +14,7 @@ keywords = ["robotics", "teleoperation", "vr", "robot-control"]
 
 dependencies = [
     "opencv-python",
+    "pyrealsense2",
     "pygame>=2.5",
     "pyaml",
     "python-dotenv",

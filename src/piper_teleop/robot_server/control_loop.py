@@ -8,6 +8,7 @@ from pathlib import Path
 
 import dotenv
 import numpy as np
+import yaml
 from lerobot.utils.robot_utils import busy_wait
 from tactile_teleop_sdk import TactileAPI
 
@@ -15,6 +16,7 @@ from piper_teleop.config import TelegripConfig
 from piper_teleop.robot_server.camera import SharedCameraData
 from piper_teleop.robot_server.keyboard_controller import KeyboardController
 from piper_teleop.robot_server.lerobot_policy import LerobotPolicy
+from piper_teleop.utils import get_absolute_path
 
 from .core.geometry import xyzrpy2transform
 from .core.robot_interface import RobotInterface, arm_angles_to_action_dict
@@ -35,6 +37,7 @@ class ArmState:
     initial_transform: np.ndarray = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
     origin_transform: np.ndarray = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
     target_transform: np.ndarray | None = None
+    deposit_transform: np.ndarray | None = None
     gripper_closed: bool = True
     # Gamepad: incremental opening in metres; None = use gripper_closed / GRIPPER_FINGER_OPEN_M
     gripper_gap_m: float | None = None
@@ -118,6 +121,8 @@ class ControlLoop:
         if arm_goal.reset_to_init:
             arm_state.target_transform = arm_state.initial_transform
             arm_state.origin_transform = arm_state.initial_transform
+            arm_state.gripper_closed = False
+            arm_state.gripper_gap_m = GRIPPER_FINGER_OPEN_M
         elif arm_goal.reset_reference:
             if self.robot_enabled:
                 # NOTE: We use the last target transform as the origin transform since there is an offset between the target and the EEF transform
@@ -137,7 +142,7 @@ class ControlLoop:
                 relative_transform = np.linalg.inv(transformation_matrix) @ (relative_transform @ transformation_matrix)
             arm_state.target_transform = arm_state.origin_transform @ relative_transform
 
-        if arm_goal.gripper_closed is not None:
+        if arm_goal.gripper_closed is not None and not arm_goal.reset_to_init:
             arm_state.gripper_closed = arm_goal.gripper_closed
         return arm_state
 
@@ -210,6 +215,39 @@ class ControlLoop:
             f"Overhead: {overhead_time*1000:.1f}ms, Total: {total_time*1000:.1f}ms"
         )
 
+    def _load_deposit_pose_file(self, left_arm: ArmState, right_arm: ArmState) -> None:
+        pose_path = get_absolute_path(self.config.deposit_pose_file)
+        if not pose_path.exists():
+            logger.warning("Deposit pose file not found: %s", pose_path)
+            return
+
+        try:
+            with open(pose_path, "r") as handle:
+                pose_data = yaml.safe_load(handle) or {}
+        except Exception as exc:
+            logger.error("Failed to load deposit pose file %s: %s", pose_path, exc)
+            return
+
+        arm_mappings = [("left", left_arm), ("right", right_arm)]
+        for arm_name, arm_state in arm_mappings:
+            arm_payload = pose_data.get(arm_name, {})
+            transform_rows = arm_payload.get("transform")
+            if transform_rows is None:
+                continue
+
+            transform = np.asarray(transform_rows, dtype=float)
+            if transform.shape != (4, 4):
+                logger.error(
+                    "Deposit pose for %s arm in %s has invalid shape %s",
+                    arm_name,
+                    pose_path,
+                    transform.shape,
+                )
+                continue
+
+            arm_state.deposit_transform = transform
+            logger.info("Loaded %s arm deposit pose from %s", arm_name, pose_path)
+
     async def run(self):
         """Control loop for the teleoperation system."""
         left_arm = ArmState(arm_name="left")
@@ -237,6 +275,7 @@ class ControlLoop:
                 self.robot_enabled = (
                     self.robot_interface.left_arm_connected or self.robot_interface.right_arm_connected
                 )
+        self._load_deposit_pose_file(left_arm, right_arm)
         if self.robot_enabled:
             self.robot_interface.return_to_initial_position()
         if self.use_leader:
@@ -253,7 +292,7 @@ class ControlLoop:
 
             if self.use_gamepad:
                 # Gamepad always drives the left-arm goal; the same goal is copied for the right IK chain.
-                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform)
+                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform, left_arm.deposit_transform)
                 right_arm_goal = copy.deepcopy(left_arm_goal)
             elif self.use_keyboard:
                 # Single follower: only call get_goal for the connected arm (merged WASD+TG keys in

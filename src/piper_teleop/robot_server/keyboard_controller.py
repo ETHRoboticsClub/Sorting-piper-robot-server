@@ -136,6 +136,7 @@ class KeyboardController:
         # Handle reset command
         if state.reset_to_init:
             self.target_transforms[arm_name] = self.origin_transforms[arm_name].copy()
+            arm_goal.gripper_closed = False
             arm_goal.reset_to_init = True
             return arm_goal
 
