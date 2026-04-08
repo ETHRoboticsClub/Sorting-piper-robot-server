@@ -34,7 +34,7 @@ Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboa
 2. **Clone and install this repo:**
 
    ```bash
-   git clone https://github.com/ETHRoboticsClub/piper-robot-server.git
+   git clone https://github.com/ETHRoboticsClub/Sorting-piper-robot-server.git
    cd piper-robot-server
    pip install -e .
    conda install pinocchio==3.2.0 casadi==3.6.7 -c conda-forge
