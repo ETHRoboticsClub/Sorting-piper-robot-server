@@ -52,7 +52,7 @@ class LerobotPolicy:
             make_default_processors()
         )
 
-    def convert_actions_to_dict(self, actions: dict) -> tuple[dict, dict]:
+    def convert_actions_to_dict(self, actions: dict, single_arm_side: str = "right") -> tuple[dict, dict]:
         dict_left = dict()
         dict_right = dict()
         for k, v in actions.items():
@@ -60,8 +60,14 @@ class LerobotPolicy:
                 dict_left[k.replace("L.", "") + ".pos"] = v
             elif k.startswith("R."):
                 dict_right[k.replace("R.", "") + ".pos"] = v
+            elif k.startswith("joint_"):
+                key = k if k.endswith(".pos") else f"{k}.pos"
+                if single_arm_side == "left":
+                    dict_left[key] = v
+                else:
+                    dict_right[key] = v
             else:
-                raise Exception("wrong name")
+                raise ValueError(f"unsupported action key: {k}")
         return dict_left, dict_right
 
     def predict(
@@ -70,8 +76,19 @@ class LerobotPolicy:
         right_joints: dict,
         cams: dict[str, np.ndarray],
         dof: int = 7,
+        single_arm_side: str = "right",
     ) -> np.ndarray:
         obs = {k.replace("observation.images.", ""): v for k, v in cams.items()}
+
+        # Single-arm ACT datasets expect observation.state names joint_0..joint_6.
+        joint_names = [f"joint_{i}" for i in range(dof)]
+        right_has_all = all(f"{name}.pos" in right_joints for name in joint_names)
+        left_has_all = all(f"{name}.pos" in left_joints for name in joint_names)
+        state_source = right_joints if right_has_all else (left_joints if left_has_all else right_joints)
+        for name in joint_names:
+            pos_key = f"{name}.pos"
+            if pos_key in state_source:
+                obs[name] = state_source[pos_key]
 
         for left_joint in left_joints:
             obs["L." + left_joint.replace(".pos", "")] = left_joints[left_joint]
@@ -96,4 +113,4 @@ class LerobotPolicy:
         act_processed = make_robot_action(action_values, self.dataset_meta.features)
         act_processed = self.robot_action_processor((act_processed, obs))
 
-        return self.convert_actions_to_dict(act_processed)
+        return self.convert_actions_to_dict(act_processed, single_arm_side=single_arm_side)

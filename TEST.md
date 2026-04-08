@@ -16,3 +16,7 @@ lerobot-edit-dataset \
   --operation.type merge \
   --operation.repo_ids "['/home/arc_user/Sorting-piper-robot-server/data/xxx', '/home/arc_user/Sorting-piper-robot-server/data/yyy']"
 ```
+
+```bash
+robotserver --policy --show-cameras
+```

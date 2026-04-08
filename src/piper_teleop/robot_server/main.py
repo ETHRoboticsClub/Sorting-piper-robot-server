@@ -31,7 +31,10 @@ def _camera_process_wrapper(
             shared_data=shared_data,
             show_camera_feeds=config.show_camera_feeds,
         )
-        await camera_streamer.start(config.livekit_room, config.camera_streamer_participant)
+        try:
+            await camera_streamer.start(config.livekit_room, config.camera_streamer_participant)
+        finally:
+            await camera_streamer.stop()
 
     asyncio.run(run_camera())
 
@@ -51,9 +54,11 @@ async def _run_control_process(config: TelegripConfig, shared_data: SharedCamera
     Run the controll process (receiving, processing and sending commands to the robot)
     """
     control_loop = ControlLoop(config=config, shared_data=shared_data)
-    control_loop_task = asyncio.create_task(control_loop.run())
-
-    await asyncio.gather(control_loop_task)
+    try:
+        control_loop_task = asyncio.create_task(control_loop.run())
+        await asyncio.gather(control_loop_task)
+    finally:
+        await control_loop.stop()
 
 
 def main():

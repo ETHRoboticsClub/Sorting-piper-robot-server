@@ -253,6 +253,7 @@ class TelegripConfig:
     convert_images_to_video = False  # Post-processing option when use_video=False. If True, converts the PNG frames to video format after recording completes.
     display_data = False
     show_camera_feeds: bool = False
+    no_cameras: bool = False
     image_writer_processes = 0
     image_writer_threads = 12
     # Control flags
@@ -267,9 +268,9 @@ class TelegripConfig:
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (
-        "/home/alex/ethrc/piper-robot-server/policy_checkpoint/checkpoint_new_data/checkpoints/last/pretrained_model"
+        "/home/arc_user/Sorting-piper-robot-server/outputs/train/act_merged/checkpoints/last/pretrained_model"
     )
-    policy_repo_id: str = "ETHRC/pick_and_place_v2"
+    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/merged_51_ep"
     enable_visualization: bool = True
     autoconnect: bool = False
     log_level: str = "warning"

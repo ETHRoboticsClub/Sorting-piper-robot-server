@@ -3,13 +3,14 @@ import copy
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import dotenv
 import numpy as np
 import yaml
 from lerobot.utils.robot_utils import precise_sleep
+from tactile_teleop_sdk.inputs.base import ArmGoal
 from tactile_teleop_sdk import TactileAPI
 
 from piper_teleop.config import TelegripConfig
@@ -34,8 +35,12 @@ GRIPPER_FINGER_OPEN_M = 0.07
 @dataclass
 class ArmState:
     arm_name: str
-    initial_transform: np.ndarray = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
-    origin_transform: np.ndarray = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
+    initial_transform: np.ndarray = field(
+        default_factory=lambda: xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
+    )
+    origin_transform: np.ndarray = field(
+        default_factory=lambda: xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
+    )
     target_transform: np.ndarray | None = None
     deposit_transform: np.ndarray | None = None
     gripper_closed: bool = True
@@ -116,6 +121,33 @@ class ControlLoop:
         if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
             return "right"
         return "left"
+
+    def _policy_action_side(self) -> str:
+        if self.robot_interface.left_arm_connected and not self.robot_interface.right_arm_connected:
+            return "left"
+        if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
+            return "right"
+        return self._record_side_for_single_arm()
+
+    def _policy_action_dicts_to_joint_angles(self, dict_left: dict, dict_right: dict) -> np.ndarray:
+        joint_angles = np.array(self.robot_interface.arm_angles, copy=True)
+
+        left_joint_indices = {f"joint_{i}.pos": 6 + i for i in range(6)}
+        right_joint_indices = {f"joint_{i}.pos": i for i in range(6)}
+
+        for key, index in left_joint_indices.items():
+            if key in dict_left:
+                joint_angles[index] = float(dict_left[key])
+        if "joint_6.pos" in dict_left:
+            joint_angles[12] = float(dict_left["joint_6.pos"])
+
+        for key, index in right_joint_indices.items():
+            if key in dict_right:
+                joint_angles[index] = float(dict_right[key])
+        if "joint_6.pos" in dict_right:
+            joint_angles[13] = float(dict_right["joint_6.pos"])
+
+        return joint_angles
 
     def update_arm_state(self, arm_goal, arm_state: ArmState) -> ArmState:
         if arm_goal.reset_to_init:
@@ -257,10 +289,12 @@ class ControlLoop:
         right_arm.origin_transform = right_arm.initial_transform
 
         self.robot_interface.setup_kinematics()
-        if self.use_keyboard or self.use_gamepad:
+        if self.use_keyboard or self.use_gamepad or self.use_policy or self.use_leader:
             logger.info(
-                "Local control (%s): skipping Tactile VR connection (no LiveKit room required).",
-                "keyboard" if self.use_keyboard else "gamepad",
+                "Local/policy control (%s): skipping Tactile VR connection (no LiveKit room required).",
+                "leader"
+                if self.use_leader
+                else ("policy" if self.use_policy else ("keyboard" if self.use_keyboard else "gamepad")),
             )
         else:
             await self.api.connect_vr_controller()
@@ -310,6 +344,9 @@ class ControlLoop:
                     self.keyboard_controller.single_follower_side = None
                     left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
                     right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
+            elif self.use_policy or self.use_leader:
+                left_arm_goal = ArmGoal(arm="left")
+                right_arm_goal = ArmGoal(arm="right")
             else:
                 left_arm_goal = await self.api.get_controller_goal("left")
                 right_arm_goal = await self.api.get_controller_goal("right")
@@ -335,16 +372,23 @@ class ControlLoop:
                 obs_dict_leader = self.robot_leader.get_observations()
                 self.update_robot_from_leader(obs_dict_leader)
             elif self.use_policy:
-                dict_left, dict_right = self.policy.predict(obs_dict["left"], obs_dict["right"], cams)
+                dict_left, dict_right = self.policy.predict(
+                    obs_dict["left"],
+                    obs_dict["right"],
+                    cams,
+                    single_arm_side=self._policy_action_side(),
+                )
                 if self.visualize:
-                    q_1 = [dict_left[k] for k in sorted(dict_left)[:6]]
-                    q_2 = [dict_right[k] for k in sorted(dict_right)[:6]]
+                    left_vis = dict_left if dict_left else dict_right
+                    right_vis = dict_right if dict_right else dict_left
+                    q_1 = [left_vis[k] for k in sorted(left_vis)[:6]]
+                    q_2 = [right_vis[k] for k in sorted(right_vis)[:6]]
                     self.robot_interface.ik_solver.vis.display(np.array(q_1 + q_2))
                 if self.robot_enabled:
-                    if self.robot_interface.left_robot:
-                        self.robot_interface.left_robot.send_action(dict_left)
-                    if self.robot_interface.right_robot:
-                        self.robot_interface.right_robot.send_action(dict_right)
+                    self.robot_interface.update_arm_angles(
+                        self._policy_action_dicts_to_joint_angles(dict_left, dict_right)
+                    )
+                    self.robot_interface.send_command()
             else:
                 self.update_robot(left_arm, right_arm)
             robot_time = time.perf_counter() - robot_start
@@ -398,7 +442,7 @@ class ControlLoop:
             self.keyboard_controller.stop()
         if self.use_gamepad:
             self.gamepad_controller.stop()
-        if not self.use_keyboard and not self.use_gamepad:
+        if not self.use_keyboard and not self.use_gamepad and not self.use_policy and not self.use_leader:
             await self.api.disconnect_vr_controller()
         if self.robot_enabled:
             self.robot_interface.disconnect()
