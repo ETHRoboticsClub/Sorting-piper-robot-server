@@ -8,7 +8,8 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import tqdm
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import INFO_PATH, load_info, load_tasks
+from lerobot.datasets.io_utils import load_info, load_tasks
+from lerobot.datasets.utils import INFO_PATH
 
 logger = logging.getLogger(__name__)
 

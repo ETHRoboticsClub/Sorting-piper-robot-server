@@ -5,10 +5,13 @@ import numpy as np
 import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.feature_utils import build_dataset_frame
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.processor import make_default_processors
-from lerobot.scripts.lerobot_record import OBS_STR, build_dataset_frame, predict_action, rename_stats
+from lerobot.processor.rename_processor import rename_stats
+from lerobot.utils.constants import OBS_STR
+from lerobot.utils.control_utils import predict_action
 
 logger = logging.getLogger(__name__)
 

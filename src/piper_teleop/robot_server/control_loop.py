@@ -9,7 +9,7 @@ from pathlib import Path
 import dotenv
 import numpy as np
 import yaml
-from lerobot.utils.robot_utils import busy_wait
+from lerobot.utils.robot_utils import precise_sleep
 from tactile_teleop_sdk import TactileAPI
 
 from piper_teleop.config import TelegripConfig
@@ -377,7 +377,7 @@ class ControlLoop:
 
             dt_s = time.perf_counter() - iteration_start
             print(f"\rFPS: {1/dt_s}", end="", flush=True)
-            busy_wait(1 / self.config.fps - dt_s)
+            precise_sleep(1 / self.config.fps - dt_s)
 
             total_time = time.perf_counter() - iteration_start
             overhead_time = total_time - commands_time - robot_time - sleep_time

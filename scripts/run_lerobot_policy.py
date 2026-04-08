@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.utils.robot_utils import busy_wait
+from lerobot.utils.robot_utils import precise_sleep
 
 from piper_teleop.config import config
 from piper_teleop.robot_server.core import RobotInterface
@@ -64,4 +64,4 @@ if __name__ == "__main__":
             robot.right_robot.send_action(dict_right)
 
         dt_s = time.perf_counter() - start_episode_t
-        busy_wait(1 / dataset.fps - dt_s)
+        precise_sleep(1 / dataset.fps - dt_s)

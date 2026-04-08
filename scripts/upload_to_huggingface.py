@@ -22,7 +22,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, login
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import load_info
+from lerobot.datasets.io_utils import load_info
 
 load_dotenv()
 
