@@ -253,3 +253,9 @@ class Recorder:
 
         if self.events["stop_recording"]:
             self._transition(RecState.FINISHED, "Stop Recording", self._end_recording, None)
+
+    def request_cycle_episode(self) -> None:
+        self.events["exit_early"] = True
+
+    def request_discard_episode(self) -> None:
+        self.events["rerecord_episode"] = True

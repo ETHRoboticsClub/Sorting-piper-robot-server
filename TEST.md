@@ -11,12 +11,33 @@ lerobot-train \
 
 ```bash
 lerobot-edit-dataset \
-  --repo_id /home/arc_user/Sorting-piper-robot-server/data/merged_51_ep \
-  --new_repo_id /home/arc_user/Sorting-piper-robot-server/data/merged_51_ep \
+  --new_repo_id /home/arc_user/Sorting-piper-robot-server/data/merged/20260408_0 \
+  --repo_id /home/arc_user/Sorting-piper-robot-server/data/merged/20260408_0 \
   --operation.type merge \
-  --operation.repo_ids "['/home/arc_user/Sorting-piper-robot-server/data/xxx', '/home/arc_user/Sorting-piper-robot-server/data/yyy']"
+  --operation.repo_ids "['/home/arc_user/Sorting-piper-robot-server/data/processed/20260408_1', '/home/arc_user/Sorting-piper-robot-server/data/processed/20260408_0', '/home/arc_user/Sorting-piper-robot-server/data/processed/20260407_0_sub']"
 ```
 
 ```bash
 robotserver --policy --show-cameras
 ```
+
+```bash
+lerobot-edit-dataset \
+  --repo_id /home/arc_user/Sorting-piper-robot-server/data/2026-04-08_21-33-57 \
+  --operation.type delete_episodes \
+  --operation.episode_indices "[4]"
+```
+
+Temporary fix to train model -> Some issues, also isssue wiht shwoing vide -> --show-camera
+conda activate piper_new_backup
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+
+lerobot-train \
+  --dataset.repo_id=/home/arc_user/Sorting-piper-robot-server/data/merged/20260409_final_mix \
+  --dataset.video_backend=pyav \
+  --policy.type=act \
+  --output_dir=/home/arc_user/Sorting-piper-robot-server/outputs/train/act_20260409_final_mix_smoke_pyav \
+  --job_name=act_20260409_final_mix_smoke_pyav \
+  --policy.device=cuda \
+  --policy.repo_id=${HF_USER}/act_20260409_final_mix_smoke_pyav \
+  --steps=500

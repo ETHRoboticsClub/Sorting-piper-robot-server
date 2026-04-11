@@ -129,8 +129,6 @@ def main():
 
     if config.use_policy:
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
-        assert not args.gamepad, "Gamepad control cannot be used when policy control is enabled"
-        assert not args.ee_world, "--ee-world cannot be used when policy control is enabled"
         assert not args.record, "Recording cannot be used when policy control is enabled"
         assert not args.resume, "Resume recording cannot be used when policy control is enabled"
         assert not args.leader, "Leader control cannot be used when policy control is enabled"

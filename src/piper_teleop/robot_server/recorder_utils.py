@@ -60,23 +60,26 @@ def convert_image_dataset_to_video(
     total_episodes = int(info["total_episodes"])
     with tqdm.tqdm(total=total_episodes, desc="converting episodes") as pbar:
         for parquet_file in parquet_files:
-            parquet_file_reader = pq.ParquetFile(parquet_file)
-            for batch in parquet_file_reader.iter_batches(batch_size=batch_parquet):
-                for i in range(len(batch)):
-                    row = {col: batch[col][i].as_py() for col in batch.column_names}
-                    if ep_index < row['episode_index']:
-                        ep_index = row['episode_index']
-                        new_dataset.save_episode()
-                        pbar.update(1)
-                    task = tasks_df.index[int(row["task_index"])]
-                    obs_action = {'action': np.array(row['action'], dtype=np.float32),
-                                  'observation.state': np.array(row['observation.state'], dtype=np.float32),
-                                  'task': task}
-                    cam = {k: np.array(PIL.Image.open(BytesIO(v['bytes']))) for k, v in row.items() if 'observation.images' in k}
-                    frame = {**obs_action, **cam}
-                    new_dataset.add_frame(frame)
-                    assert glob_index == row['index'], 'indexing error, this should not happen we iterate sequentially'
-                    glob_index += 1
+            try:
+                parquet_file_reader = pq.ParquetFile(parquet_file)
+                for batch in parquet_file_reader.iter_batches(batch_size=batch_parquet):
+                    for i in range(len(batch)):
+                        row = {col: batch[col][i].as_py() for col in batch.column_names}
+                        if ep_index < row['episode_index']:
+                            ep_index = row['episode_index']
+                            new_dataset.save_episode()
+                            pbar.update(1)
+                        task = tasks_df.index[int(row["task_index"])]
+                        obs_action = {'action': np.array(row['action'], dtype=np.float32),
+                                    'observation.state': np.array(row['observation.state'], dtype=np.float32),
+                                    'task': task}
+                        cam = {k: np.array(PIL.Image.open(BytesIO(v['bytes']))) for k, v in row.items() if 'observation.images' in k}
+                        frame = {**obs_action, **cam}
+                        new_dataset.add_frame(frame)
+                        assert glob_index == row['index'], 'indexing error, this should not happen we iterate sequentially'
+                        glob_index += 1
+            except Exception as e:
+                logger.error(f"Error processing {parquet_file}: {e}")
     new_dataset.save_episode()
     new_dataset.finalize()
 

@@ -268,9 +268,9 @@ class TelegripConfig:
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (
-        "/home/arc_user/Sorting-piper-robot-server/outputs/train/act_merged/checkpoints/last/pretrained_model"
+        "/home/arc_user/Sorting-piper-robot-server/outputs/train/training_4090/090000/pretrained_model"
     )
-    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/merged_51_ep"
+    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/merged/20260409_final_mix"
     enable_visualization: bool = True
     autoconnect: bool = False
     log_level: str = "warning"

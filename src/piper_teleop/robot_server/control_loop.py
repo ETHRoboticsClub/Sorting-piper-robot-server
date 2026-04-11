@@ -87,6 +87,7 @@ class ControlLoop:
             policy_path = config.policy_path
             repo_id = config.policy_repo_id
             self.policy = LerobotPolicy(policy_path, repo_id)
+            self._policy_override_active_last = False
 
         self.shared_data = shared_data
         if self.config.record:
@@ -110,6 +111,16 @@ class ControlLoop:
         if self.use_leader:
             self.robot_leader = PiperLeader()
 
+    def _handle_gamepad_recording_shortcuts(self) -> None:
+        if not (self.config.record and self.use_gamepad):
+            return
+
+        command = self.gamepad_controller.consume_recording_command()
+        if command == "cycle":
+            self.recorder.request_cycle_episode()
+        elif command == "discard":
+            self.recorder.request_discard_episode()
+
     def _record_side_for_single_arm(self) -> str:
         """Which arm to log when config.single_arm (matches dataset 7-D features)."""
         cfg = self.config.single_arm_record_side
@@ -128,6 +139,9 @@ class ControlLoop:
         if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
             return "right"
         return self._record_side_for_single_arm()
+
+    def _policy_gamepad_override_active(self) -> bool:
+        return self.use_policy and self.use_gamepad and self.gamepad_controller.has_manual_override()
 
     def _policy_action_dicts_to_joint_angles(self, dict_left: dict, dict_right: dict) -> np.ndarray:
         joint_angles = np.array(self.robot_interface.arm_angles, copy=True)
@@ -324,8 +338,17 @@ class ControlLoop:
 
             commands_time = time.perf_counter() - commands_start
 
-            if self.use_gamepad:
+            override_active = self._policy_gamepad_override_active()
+            if self.use_policy:
+                if override_active and not self._policy_override_active_last:
+                    self.policy.reset()
+                self._policy_override_active_last = override_active
+
+            if self.use_gamepad and not self.use_policy:
                 # Gamepad always drives the left-arm goal; the same goal is copied for the right IK chain.
+                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform, left_arm.deposit_transform)
+                right_arm_goal = copy.deepcopy(left_arm_goal)
+            elif override_active:
                 left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform, left_arm.deposit_transform)
                 right_arm_goal = copy.deepcopy(left_arm_goal)
             elif self.use_keyboard:
@@ -371,7 +394,7 @@ class ControlLoop:
             if self.use_leader:
                 obs_dict_leader = self.robot_leader.get_observations()
                 self.update_robot_from_leader(obs_dict_leader)
-            elif self.use_policy:
+            elif self.use_policy and not override_active:
                 dict_left, dict_right = self.policy.predict(
                     obs_dict["left"],
                     obs_dict["right"],
@@ -394,6 +417,7 @@ class ControlLoop:
             robot_time = time.perf_counter() - robot_start
 
             if self.config.record:
+                self._handle_gamepad_recording_shortcuts()
                 action_dict = arm_angles_to_action_dict(self.robot_interface.arm_angles)
                 self.recorder.add_observation(
                     left_joints=obs_dict["left"],

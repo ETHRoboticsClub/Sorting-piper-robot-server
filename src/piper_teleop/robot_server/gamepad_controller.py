@@ -64,6 +64,7 @@ class GamepadController:
         self._target_transform: np.ndarray | None = None
         self._origin_transform: np.ndarray | None = None
         self._gripper_gap_m: float = 0.0
+        self._last_hat_y: int = 0
 
         self._initialized = False
         self.joystick: pygame.joystick.Joystick | None = None
@@ -95,6 +96,28 @@ class GamepadController:
     @property
     def gripper_gap_m(self) -> float:
         return float(np.clip(self._gripper_gap_m, 0.0, GRIPPER_OPEN_M))
+
+    def has_manual_override(self) -> bool:
+        self._pump()
+        if self.joystick is None:
+            return False
+
+        if any(
+            abs(v) > 1e-6
+            for v in (
+                self._stick_axis(0),
+                self._stick_axis(1),
+                self._stick_axis(3),
+                self._stick_axis(4),
+                self._trigger_vertical_m(),
+            )
+        ):
+            return True
+
+        return any(
+            self._button(index)
+            for index in (_BTN_CROSS, _BTN_CIRCLE, _BTN_SQUARE, _BTN_TRIANGLE, _BTN_L1, _BTN_R1)
+        )
 
     def _stick_axis(self, index: int) -> float:
         if index < 0 or self.joystick is None or index >= self.joystick.get_numaxes():
@@ -133,8 +156,25 @@ class GamepadController:
             return False
         return bool(self.joystick.get_button(index))
 
+    def _hat_y(self) -> int:
+        if self.joystick is None or self.joystick.get_numhats() <= 0:
+            return 0
+        _, hat_y = self.joystick.get_hat(0)
+        return int(hat_y)
+
     def _pump(self) -> None:
         pygame.event.pump()
+
+    def consume_recording_command(self) -> str | None:
+        self._pump()
+        hat_y = self._hat_y()
+        command = None
+        if hat_y == 1 and self._last_hat_y != 1:
+            command = "cycle"
+        elif hat_y == -1 and self._last_hat_y != -1:
+            command = "discard"
+        self._last_hat_y = hat_y
+        return command
 
     @staticmethod
     def _scaled_planar(ax_a: float, ax_b: float, cap: float) -> tuple[float, float]:
