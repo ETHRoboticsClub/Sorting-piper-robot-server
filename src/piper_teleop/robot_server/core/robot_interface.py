@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Tuple
+from typing import Any
 
 import numpy as np
 import pinocchio as pin
@@ -22,26 +22,14 @@ from .piper import Piper, PiperConfig
 logger = logging.getLogger(__name__)
 
 
-def arm_angles_to_action_dict(arm_angles):
-    left_action_dict = {
-        "joint_0.pos": float(arm_angles[6]),
-        "joint_1.pos": float(arm_angles[7]),
-        "joint_2.pos": float(arm_angles[8]),
-        "joint_3.pos": float(arm_angles[9]),
-        "joint_4.pos": float(arm_angles[10]),
-        "joint_5.pos": float(arm_angles[11]),
-        "joint_6.pos": float(arm_angles[12]),
+def arm_angles_to_action_dict(arm_angles: np.ndarray) -> dict[str, dict[str, float]]:
+    """Convert single-arm 7D joint vector to action dictionaries."""
+    action_dict = {
+        f"joint_{i}.pos": float(arm_angles[i]) for i in range(6)
     }
-    right_action_dict = {
-        "joint_0.pos": float(arm_angles[0]),
-        "joint_1.pos": float(arm_angles[1]),
-        "joint_2.pos": float(arm_angles[2]),
-        "joint_3.pos": float(arm_angles[3]),
-        "joint_4.pos": float(arm_angles[4]),
-        "joint_5.pos": float(arm_angles[5]),
-        "joint_6.pos": float(arm_angles[13]),
-    }
-    return {"left": left_action_dict, "right": right_action_dict}
+    action_dict["joint_6.pos"] = float(arm_angles[6])
+    # Keep legacy keys for recorder/policy interfaces.
+    return {"active": action_dict, "left": action_dict, "right": action_dict}
 
 
 @contextlib.contextmanager
@@ -81,46 +69,30 @@ class RobotInterface:
 
     def __init__(self, config: TelegripConfig):
         self.config = config
-        self.left_robot = None
-        self.right_robot = None
+        self.robot = None
+        self.active_arm_side = "left"
         self.is_enabled = config.enable_robot
         self.is_connected = False
 
-        # Individual arm connection status
+        # Compatibility flags used by policy/recorder path.
         self.left_arm_connected = False
         self.right_arm_connected = False
 
-        # Joint state
-        self.arm_angles = np.zeros(NUM_JOINTS * 2)
-        # arm angles
-        # 0-5: left arm joints
-        # 6-11: right arm joints
-        # 12: left gripper
-        # 13: right gripper
+        # Single-arm state: 6 arm joints + 1 gripper.
+        self.arm_angles = np.zeros(NUM_JOINTS)
 
         self.ik_solver = None
 
         # Control timing
         self.last_send_time = 0
 
-        # Error tracking - separate for each arm
-        self.left_arm_errors = 0
-        self.right_arm_errors = 0
+        # Error tracking
+        self.arm_errors = 0
         self.general_errors = 0
-        self.max_arm_errors = 3  # Allow fewer errors per arm before marking as disconnected
+        self.max_arm_errors = 3
         self.max_general_errors = 8  # Allow more general errors before full disconnection
 
-        # Initial positions for safe shutdown - restored original values
-        self.initial_left_arm = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
-        self.initial_right_arm = xyzrpy2transform(0.19, -0.57, 0.2, 0, 1.57, 0)
-
-    def setup_robot_configs(self) -> Tuple[PiperConfig, PiperConfig]:
-        """Create robot configurations for both arms."""
-
-        left_config = PiperConfig(port="left_piper", id="left_follower")
-        right_config = PiperConfig(port="right_piper", id="right_follower")
-
-        return left_config, right_config
+        self.initial_arm = xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
 
     def connect(self) -> bool:
         """Connect to robot hardware."""
@@ -133,42 +105,25 @@ class RobotInterface:
             return False
 
         try:
-            left_config, right_config = self.setup_robot_configs()
             logger.info("Connecting to robot...")
 
-            # Connect left arm - always suppress low-level CAN debug output
-            try:
-                with suppress_stdout_stderr():
-                    self.left_robot = Piper(left_config)
-                    self.left_robot.connect()
-                self.left_arm_connected = True
-                logger.info("✅ Left arm connected successfully")
-            except Exception as e:
-                logger.error(f"❌ Left arm connection failed: {e}")
-                self.left_arm_connected = False
-
-            # Connect right arm - always suppress low-level CAN debug output
-            try:
-                with suppress_stdout_stderr():
-                    self.right_robot = Piper(right_config)
-                    self.right_robot.connect()
-                self.right_arm_connected = True
-                logger.info("✅ Right arm connected successfully")
-            except Exception as e:
-                logger.error(f"❌ Right arm connection failed: {e}")
-                self.right_arm_connected = False
-
-            # Connected if at least one arm succeeded (single follower arm is supported)
-            self.is_connected = self.left_arm_connected or self.right_arm_connected
+            for side, port in (("left", "left_piper"), ("right", "right_piper")):
+                try:
+                    with suppress_stdout_stderr():
+                        robot = Piper(PiperConfig(port=port, id=f"{side}_follower"))
+                        robot.connect()
+                    self.robot = robot
+                    self.active_arm_side = side
+                    self.is_connected = True
+                    self.left_arm_connected = side == "left"
+                    self.right_arm_connected = side == "right"
+                    logger.info("✅ Connected single follower arm on %s (%s)", side, port)
+                    break
+                except Exception as e:
+                    logger.warning("Connection failed on %s (%s): %s", side, port, e)
 
             if not self.is_connected:
-                logger.error("❌ Failed to connect any robot arms")
-            elif not (self.left_arm_connected and self.right_arm_connected):
-                logger.warning(
-                    "Partial connection: left=%s right=%s — commands send only to connected arm(s).",
-                    self.left_arm_connected,
-                    self.right_arm_connected,
-                )
+                logger.error("❌ Failed to connect follower arm on left_piper or right_piper")
 
             return self.is_connected
 
@@ -178,11 +133,10 @@ class RobotInterface:
             return False
 
     def setup_kinematics(self):
-        """Setup kinematics solvers using PyBullet components for both arms."""
-        # Setup solvers for both arms
+        """Setup single-arm kinematics solver."""
         ground_height = self.config.ground_height
-        self.ik_solver = Arm_IK(self.config.urdf_path, ground_height)
-        logger.info("Kinematics solvers initialized for both arms with ground plane at height %.3f", ground_height)
+        self.ik_solver = Arm_IK(self.config.urdf_path, ground_height, self.config.collision_space_urdf)
+        logger.info("Single-arm IK initialized with ground plane at height %.3f", ground_height)
 
     def get_end_effector_transform(self, arm: str) -> np.ndarray:
         """Get end effector pose for specified arm.
@@ -192,33 +146,28 @@ class RobotInterface:
         """
         if arm == "left":
             return (
-                self.left_robot.get_end_effector_transform()
-                if self.left_robot
+                self.robot.get_end_effector_transform()
+                if self.robot and self.left_arm_connected
                 else xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
             )
         elif arm == "right":
             return (
-                self.right_robot.get_end_effector_transform()
-                if self.right_robot
+                self.robot.get_end_effector_transform()
+                if self.robot and self.right_arm_connected
                 else xyzrpy2transform(0.19, 0.0, 0.2, 0, 1.57, 0)
             )
         else:
             raise ValueError(f"Invalid arm: {arm}")
 
-    def solve_ik(self, target_pose_1: np.ndarray, target_pose_2: np.ndarray, visualize: bool) -> np.ndarray:
-        """Solve inverse kinematics for both arms."""
+    def solve_ik(self, target_pose_1: np.ndarray, _unused_target_pose_2: np.ndarray | None = None, visualize: bool = True) -> np.ndarray:
+        """Solve inverse kinematics for a single arm."""
         position_1, quaternion_1 = transform2pose(target_pose_1)
-        position_2, quaternion_2 = transform2pose(target_pose_2)
         # transform2pose returns XYZW, but pin.Quaternion expects WXYZ
         target_1 = pin.SE3(
             pin.Quaternion(quaternion_1[3], quaternion_1[0], quaternion_1[1], quaternion_1[2]),
             position_1,
         )
-        target_2 = pin.SE3(
-            pin.Quaternion(quaternion_2[3], quaternion_2[0], quaternion_2[1], quaternion_2[2]),
-            position_2,
-        )
-        sol_q, is_collision = self.ik_solver.ik_fun(target_1.homogeneous, target_2.homogeneous, visualize=visualize)
+        sol_q, is_collision = self.ik_solver.ik_fun(target_1.homogeneous, visualize=visualize)
         return sol_q, is_collision
 
     def update_arm_angles(self, joint_angles: np.ndarray):
@@ -235,35 +184,20 @@ class RobotInterface:
             return True  # Don't send too frequently
 
         try:
-            # Send commands with dictionary format - no joint direction mapping
             success = True
-
-            # Send left arm command - suppress low-level CAN debug output
-            if self.left_robot and self.left_arm_connected:
+            if self.robot and self.is_connected:
                 try:
                     action_dict = arm_angles_to_action_dict(self.arm_angles)
                     with suppress_stdout_stderr():
-                        self.left_robot.send_action(action_dict["left"])
+                        self.robot.send_action(action_dict["active"])
                 except Exception as e:
-                    logger.error(f"Error sending left arm command: {e}")
-                    self.left_arm_errors += 1
-                    if self.left_arm_errors > self.max_arm_errors:
+                    logger.error("Error sending arm command: %s", e)
+                    self.arm_errors += 1
+                    if self.arm_errors > self.max_arm_errors:
+                        self.is_connected = False
                         self.left_arm_connected = False
-                        logger.error("❌ Left arm disconnected due to repeated errors")
-                    success = False
-
-            # Send right arm command - suppress low-level CAN debug output
-            if self.right_robot and self.right_arm_connected:
-                try:
-                    action_dict = arm_angles_to_action_dict(self.arm_angles)
-                    with suppress_stdout_stderr():
-                        self.right_robot.send_action(action_dict["right"])
-                except Exception as e:
-                    logger.error(f"Error sending right arm command: {e}")
-                    self.right_arm_errors += 1
-                    if self.right_arm_errors > self.max_arm_errors:
                         self.right_arm_connected = False
-                        logger.error("❌ Right arm disconnected due to repeated errors")
+                        logger.error("❌ Arm disconnected due to repeated errors")
                     success = False
 
             self.last_send_time = current_time
@@ -280,25 +214,20 @@ class RobotInterface:
     def set_gripper(self, arm: str, closed: bool):
         """Set gripper state for specified arm."""
         angle = 0.0 if closed else 0.07
-
-        if arm == "left":
-            self.arm_angles[12] = angle
-        elif arm == "right":
-            self.arm_angles[13] = angle
-        else:
-            raise ValueError(f"Invalid arm: {arm}")
+        self.arm_angles[6] = angle
 
     def return_to_initial_position(self):
-        """Return both arms to initial position."""
-        logger.info("⏪ Returning robot to initial position...")
+        """Return connected arm to initial position."""
+        logger.info("⏪ Returning arm to initial position...")
 
-        arm_angles, collision = self.solve_ik(self.initial_left_arm, self.initial_right_arm, visualize=True)
+        arm_angles, collision = self.solve_ik(self.initial_arm, visualize=True)
 
         if collision:
             logger.error("❌ Cannot return to initial position due to collision in IK solution")
-            self.arm_angles = np.zeros(NUM_JOINTS) * 2
+            self.arm_angles = np.zeros(NUM_JOINTS)
+            return
 
-        self.arm_angles = np.concatenate((arm_angles, [0.0, 0.0]))
+        self.arm_angles = np.concatenate((arm_angles, [0.0]))
 
         try:
             # Send commands for a few iterations to ensure movement
@@ -324,20 +253,12 @@ class RobotInterface:
             except Exception as e:
                 logger.error(f"Error returning to initial position: {e}")
 
-        # Disconnect both arms
-        if self.left_robot:
+        if self.robot:
             try:
-                self.left_robot.disconnect()
+                self.robot.disconnect()
             except Exception as e:
-                logger.error(f"Error disconnecting left arm: {e}")
-            self.left_robot = None
-
-        if self.right_robot:
-            try:
-                self.right_robot.disconnect()
-            except Exception as e:
-                logger.error(f"Error disconnecting right arm: {e}")
-            self.right_robot = None
+                logger.error(f"Error disconnecting arm: {e}")
+            self.robot = None
 
         self.is_connected = False
         self.is_enabled = False
@@ -347,25 +268,22 @@ class RobotInterface:
 
     def get_arm_connection_status(self, arm: str) -> bool:
         """Get connection status for specific arm based on device file existence."""
-        # Only check device file existence - ignore overall robot connection status
         if arm == "left":
-            return self.left_robot.is_connected if self.left_robot else False
-        elif arm == "right":
-            return self.right_robot.is_connected if self.right_robot else False
-        else:
-            return False
+            return self.left_arm_connected
+        if arm == "right":
+            return self.right_arm_connected
+        return False
 
     def update_arm_connection_status(self):
         """Update individual arm connection status based on device file existence."""
-        if self.is_connected:
-            self.left_arm_connected = self.left_robot.is_connected if self.left_robot else False
-            self.right_arm_connected = self.right_robot.is_connected if self.right_robot else False
+        if self.is_connected and self.robot:
+            connected = self.robot.is_connected
+            self.left_arm_connected = connected and self.active_arm_side == "left"
+            self.right_arm_connected = connected and self.active_arm_side == "right"
 
     def get_observation(self) -> dict[str, Any]:
         """Get observation from robot."""
-        if self.left_robot is None or self.right_robot is None:
-            action_dict = arm_angles_to_action_dict(self.arm_angles)
-        return {
-            "left": self.left_robot.get_observation() if self.left_robot else action_dict["left"],
-            "right": self.right_robot.get_observation() if self.right_robot else action_dict["right"],
-        }
+        action_dict = arm_angles_to_action_dict(self.arm_angles)
+        obs = self.robot.get_observation() if self.robot else action_dict["active"]
+        # Keep legacy keys so policy/recorder code paths remain compatible.
+        return {"left": obs, "right": obs}

@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import logging
 import os
 import time
@@ -122,22 +121,13 @@ class ControlLoop:
             self.recorder.request_discard_episode()
 
     def _record_side_for_single_arm(self) -> str:
-        """Which arm to log when config.single_arm (matches dataset 7-D features)."""
+        """Choose which logical side to use for single-arm datasets."""
         cfg = self.config.single_arm_record_side
-        if cfg == "right":
-            return "right"
-        if cfg == "left":
-            return "left"
-        # auto: mirror README — only right follower → use right; otherwise left
-        if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
-            return "right"
-        return "left"
+        if cfg in ("left", "right"):
+            return cfg
+        return self.robot_interface.active_arm_side
 
     def _policy_action_side(self) -> str:
-        if self.robot_interface.left_arm_connected and not self.robot_interface.right_arm_connected:
-            return "left"
-        if self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
-            return "right"
         return self._record_side_for_single_arm()
 
     def _policy_gamepad_override_active(self) -> bool:
@@ -145,22 +135,13 @@ class ControlLoop:
 
     def _policy_action_dicts_to_joint_angles(self, dict_left: dict, dict_right: dict) -> np.ndarray:
         joint_angles = np.array(self.robot_interface.arm_angles, copy=True)
-
-        left_joint_indices = {f"joint_{i}.pos": 6 + i for i in range(6)}
-        right_joint_indices = {f"joint_{i}.pos": i for i in range(6)}
-
-        for key, index in left_joint_indices.items():
-            if key in dict_left:
-                joint_angles[index] = float(dict_left[key])
-        if "joint_6.pos" in dict_left:
-            joint_angles[12] = float(dict_left["joint_6.pos"])
-
-        for key, index in right_joint_indices.items():
-            if key in dict_right:
-                joint_angles[index] = float(dict_right[key])
-        if "joint_6.pos" in dict_right:
-            joint_angles[13] = float(dict_right["joint_6.pos"])
-
+        source = dict_right if dict_right else dict_left
+        for i in range(6):
+            key = f"joint_{i}.pos"
+            if key in source:
+                joint_angles[i] = float(source[key])
+        if "joint_6.pos" in source:
+            joint_angles[6] = float(source["joint_6.pos"])
         return joint_angles
 
     def update_arm_state(self, arm_goal, arm_state: ArmState) -> ArmState:
@@ -199,50 +180,39 @@ class ControlLoop:
         return 0.0 if arm.gripper_closed else GRIPPER_FINGER_OPEN_M
 
     def update_robot_from_leader(self, obs_dict_leader: dict):
-        dict_left = obs_dict_leader["left"]
-        dict_right = obs_dict_leader["right"]
-        q_1 = [dict_left[k] for k in sorted(dict_left)]
-        q_2 = [dict_right[k] for k in sorted(dict_right)]
-        joints_wo_gripper = np.array(q_2[:-1] + q_1[:-1])
-        joint_gripper_s = [q_1[-1], q_2[-1]]
+        side = self._record_side_for_single_arm()
+        source = obs_dict_leader[side]
+        joint_values = np.array([source[f"joint_{i}.pos"] for i in range(7)], dtype=np.float64)
         if self.visualize:
-            self.robot_interface.ik_solver.vis.display(joints_wo_gripper)
-        self.robot_interface.update_arm_angles(np.concatenate([joints_wo_gripper, joint_gripper_s]))
+            self.robot_interface.ik_solver.vis.display(joint_values[:6])
+        self.robot_interface.update_arm_angles(joint_values)
         if self.robot_enabled:
             self.robot_interface.send_command()
 
-    def update_robot(self, left_arm: ArmState, right_arm: ArmState):
-        """Update robot with current control goals."""
+    def update_robot(self, arm: ArmState):
+        """Update robot with current control goal."""
         start_time_total = time.perf_counter()
         # Measure all IK time together
         start_time_ik = time.perf_counter()
 
         ik_solution, is_collision = self.robot_interface.solve_ik(
-            left_arm.target_transform, right_arm.target_transform, visualize=self.visualize
+            arm.target_transform, visualize=self.visualize
         )
-
-        current_gripper_1 = self._gripper_finger_m(left_arm)
-        current_gripper_2 = self._gripper_finger_m(right_arm)
+        current_gripper = self._gripper_finger_m(arm)
 
         if ik_solution is None:
             logger.debug("IK did not converge; keeping last joint targets, still applying gripper.")
             qa = self.robot_interface.arm_angles
-            joint12 = qa[:12] if len(qa) >= 12 else np.zeros(12)
-            self.robot_interface.update_arm_angles(
-                np.concatenate([joint12, [current_gripper_1, current_gripper_2]])
-            )
+            joint6 = qa[:6] if len(qa) >= 6 else np.zeros(6)
+            self.robot_interface.update_arm_angles(np.concatenate([joint6, [current_gripper]]))
         elif not is_collision:
-            self.robot_interface.update_arm_angles(
-                np.concatenate([ik_solution, [current_gripper_1, current_gripper_2]])
-            )
+            self.robot_interface.update_arm_angles(np.concatenate([ik_solution, [current_gripper]]))
         else:
             # Do not move arm through a bad IK pose, but still apply gripper (keyboard toggle).
             logger.debug("IK in collision; holding arm pose, applying gripper only.")
             qa = self.robot_interface.arm_angles
-            joint12 = qa[:12] if len(qa) >= 12 else ik_solution
-            self.robot_interface.update_arm_angles(
-                np.concatenate([joint12, [current_gripper_1, current_gripper_2]])
-            )
+            joint6 = qa[:6] if len(qa) >= 6 else ik_solution
+            self.robot_interface.update_arm_angles(np.concatenate([joint6, [current_gripper]]))
 
         ik_time = time.perf_counter() - start_time_ik
 
@@ -261,7 +231,7 @@ class ControlLoop:
             f"Overhead: {overhead_time*1000:.1f}ms, Total: {total_time*1000:.1f}ms"
         )
 
-    def _load_deposit_pose_file(self, left_arm: ArmState, right_arm: ArmState) -> None:
+    def _load_deposit_pose_file(self, arm: ArmState) -> None:
         pose_path = get_absolute_path(self.config.deposit_pose_file)
         if not pose_path.exists():
             logger.warning("Deposit pose file not found: %s", pose_path)
@@ -274,33 +244,29 @@ class ControlLoop:
             logger.error("Failed to load deposit pose file %s: %s", pose_path, exc)
             return
 
-        arm_mappings = [("left", left_arm), ("right", right_arm)]
-        for arm_name, arm_state in arm_mappings:
-            arm_payload = pose_data.get(arm_name, {})
-            transform_rows = arm_payload.get("transform")
-            if transform_rows is None:
-                continue
+        side = self._record_side_for_single_arm()
+        arm_payload = pose_data.get(side, pose_data.get("arm", {}))
+        transform_rows = arm_payload.get("transform")
+        if transform_rows is None:
+            logger.warning("Deposit pose file %s has no transform for %s/arm", pose_path, side)
+            return
 
-            transform = np.asarray(transform_rows, dtype=float)
-            if transform.shape != (4, 4):
-                logger.error(
-                    "Deposit pose for %s arm in %s has invalid shape %s",
-                    arm_name,
-                    pose_path,
-                    transform.shape,
-                )
-                continue
+        transform = np.asarray(transform_rows, dtype=float)
+        if transform.shape != (4, 4):
+            logger.error(
+                "Deposit pose for %s arm in %s has invalid shape %s",
+                side,
+                pose_path,
+                transform.shape,
+            )
+            return
 
-            arm_state.deposit_transform = transform
-            logger.info("Loaded %s arm deposit pose from %s", arm_name, pose_path)
+        arm.deposit_transform = transform
+        logger.info("Loaded %s arm deposit pose from %s", side, pose_path)
 
     async def run(self):
         """Control loop for the teleoperation system."""
-        left_arm = ArmState(arm_name="left")
-        right_arm = ArmState(arm_name="right")
-
-        right_arm.initial_transform = xyzrpy2transform(0.19, -0.57, 0.2, 0, 1.57, 0)
-        right_arm.origin_transform = right_arm.initial_transform
+        arm = ArmState(arm_name="arm")
 
         self.robot_interface.setup_kinematics()
         if self.use_keyboard or self.use_gamepad or self.use_policy or self.use_leader:
@@ -319,18 +285,14 @@ class ControlLoop:
                 logger.error(f"Error connecting to robot: {e}")
                 return
             finally:
-                # One physical follower arm is enough to drive teleop (other side may have no CAN)
-                self.robot_enabled = (
-                    self.robot_interface.left_arm_connected or self.robot_interface.right_arm_connected
-                )
-        self._load_deposit_pose_file(left_arm, right_arm)
+                self.robot_enabled = self.robot_interface.is_connected
+        self._load_deposit_pose_file(arm)
         if self.robot_enabled:
             self.robot_interface.return_to_initial_position()
         if self.use_leader:
             self.robot_leader.connect()
 
-        left_arm.target_transform = left_arm.initial_transform
-        right_arm.target_transform = right_arm.initial_transform
+        arm.target_transform = arm.initial_transform
 
         while True:
             iteration_start = time.perf_counter()
@@ -345,45 +307,25 @@ class ControlLoop:
                 self._policy_override_active_last = override_active
 
             if self.use_gamepad and not self.use_policy:
-                # Gamepad always drives the left-arm goal; the same goal is copied for the right IK chain.
-                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform, left_arm.deposit_transform)
-                right_arm_goal = copy.deepcopy(left_arm_goal)
+                arm_goal = self.gamepad_controller.get_goal(arm.target_transform, arm.deposit_transform)
             elif override_active:
-                left_arm_goal = self.gamepad_controller.get_goal(left_arm.target_transform, left_arm.deposit_transform)
-                right_arm_goal = copy.deepcopy(left_arm_goal)
+                arm_goal = self.gamepad_controller.get_goal(arm.target_transform, arm.deposit_transform)
             elif self.use_keyboard:
-                # Single follower: only call get_goal for the connected arm (merged WASD+TG keys in
-                # KeyboardController), then duplicate for IK. Otherwise right-column keys would only
-                # move the other arm's joint block, which has no hardware on left_piper-only setups.
-                if self.robot_enabled and self.robot_interface.left_arm_connected and not self.robot_interface.right_arm_connected:
-                    self.keyboard_controller.single_follower_side = "left"
-                    left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
-                    right_arm_goal = copy.deepcopy(left_arm_goal)
-                elif self.robot_enabled and self.robot_interface.right_arm_connected and not self.robot_interface.left_arm_connected:
-                    self.keyboard_controller.single_follower_side = "right"
-                    right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
-                    left_arm_goal = copy.deepcopy(right_arm_goal)
-                else:
-                    self.keyboard_controller.single_follower_side = None
-                    left_arm_goal = self.keyboard_controller.get_goal("left", left_arm.target_transform)
-                    right_arm_goal = self.keyboard_controller.get_goal("right", right_arm.target_transform)
+                keyboard_side = self._record_side_for_single_arm()
+                self.keyboard_controller.single_follower_side = keyboard_side
+                arm_goal = self.keyboard_controller.get_goal(keyboard_side, arm.target_transform)
             elif self.use_policy or self.use_leader:
-                left_arm_goal = ArmGoal(arm="left")
-                right_arm_goal = ArmGoal(arm="right")
+                arm_goal = ArmGoal(arm=self._record_side_for_single_arm())
             else:
-                left_arm_goal = await self.api.get_controller_goal("left")
-                right_arm_goal = await self.api.get_controller_goal("right")
+                arm_goal = await self.api.get_controller_goal(self._record_side_for_single_arm())
 
-            left_arm = self.update_arm_state(left_arm_goal, left_arm)
-            right_arm = self.update_arm_state(right_arm_goal, right_arm)
+            arm = self.update_arm_state(arm_goal, arm)
 
             if self.use_gamepad:
                 g = self.gamepad_controller.gripper_gap_m
-                left_arm.gripper_gap_m = g
-                right_arm.gripper_gap_m = g
+                arm.gripper_gap_m = g
             else:
-                left_arm.gripper_gap_m = None
-                right_arm.gripper_gap_m = None
+                arm.gripper_gap_m = None
 
             if self.config.record or self.use_policy:
                 obs_dict = self.robot_interface.get_observation()
@@ -403,17 +345,15 @@ class ControlLoop:
                 )
                 if self.visualize:
                     left_vis = dict_left if dict_left else dict_right
-                    right_vis = dict_right if dict_right else dict_left
                     q_1 = [left_vis[k] for k in sorted(left_vis)[:6]]
-                    q_2 = [right_vis[k] for k in sorted(right_vis)[:6]]
-                    self.robot_interface.ik_solver.vis.display(np.array(q_1 + q_2))
+                    self.robot_interface.ik_solver.vis.display(np.array(q_1))
                 if self.robot_enabled:
                     self.robot_interface.update_arm_angles(
                         self._policy_action_dicts_to_joint_angles(dict_left, dict_right)
                     )
                     self.robot_interface.send_command()
             else:
-                self.update_robot(left_arm, right_arm)
+                self.update_robot(arm)
             robot_time = time.perf_counter() - robot_start
 
             if self.config.record:
@@ -422,20 +362,18 @@ class ControlLoop:
                 self.recorder.add_observation(
                     left_joints=obs_dict["left"],
                     right_joints=obs_dict["right"],
-                    left_joints_target=action_dict["left"],
-                    right_joints_target=action_dict["right"],
+                    left_joints_target=action_dict["active"],
+                    right_joints_target=action_dict["active"],
                     cams=cams,
-                    record_side=self._record_side_for_single_arm()
-                    if self.config.single_arm
-                    else "left",
+                    record_side=self._record_side_for_single_arm(),
                 )
                 self.recorder.handle_keyboard_event()
                 if self.config.display_data:
                     self.recorder.show_data(
                         left_joints=obs_dict["left"],
                         right_joints=obs_dict["right"],
-                        left_joints_target=action_dict["left"],
-                        right_joints_target=action_dict["right"],
+                        left_joints_target=action_dict["active"],
+                        right_joints_target=action_dict["active"],
                         cams=cams,
                     )
 

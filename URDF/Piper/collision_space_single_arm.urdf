@@ -1,0 +1,183 @@
+<?xml version="1.0"?>
+<robot name="collision_space_single_arm">
+  <!--
+    Collision-space helper URDF for single-arm Piper setups.
+    Frame convention:
+      +X forward, +Y left, +Z up
+    Robot base assumed at world origin (0, 0, 0).
+  -->
+
+  <link name="world"/>
+
+  <!--
+    Stepped floor:
+      - Back side   (x < -0.03): top at z = -0.20
+      - Under base  (|x| <= 0.03): top at z = 0.00
+      - Front side  (x > +0.03): top at z = -0.10
+    URDF has finite primitives, so we approximate +/- infinity with large extents.
+  -->
+  <link name="floor_back">
+    <collision>
+      <origin xyz="-10.015 0 -0.210" rpy="0 0 0"/>
+      <geometry>
+        <box size="19.97 1.00 0.020"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="-10.015 0 -0.210" rpy="0 0 0"/>
+      <geometry>
+        <box size="19.97 1.00 0.020"/>
+      </geometry>
+      <material name="floor_gray">
+        <color rgba="0.4 0.4 0.4 0.4"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_floor_back" type="fixed">
+    <parent link="world"/>
+    <child link="floor_back"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="floor_front">
+    <collision>
+      <origin xyz="10.015 0 -0.110" rpy="0 0 0"/>
+      <geometry>
+        <box size="19.97 0.60 0.020"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="10.015 0 -0.110" rpy="0 0 0"/>
+      <geometry>
+        <box size="19.97 0.60 0.020"/>
+      </geometry>
+      <material name="floor_gray">
+        <color rgba="0.4 0.4 0.4 0.4"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_floor_front" type="fixed">
+    <parent link="world"/>
+    <child link="floor_front"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="floor_under_base">
+    <collision>
+      <origin xyz="0 0 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 1.00 0.020"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.06 1.00 0.020"/>
+      </geometry>
+      <material name="floor_gray">
+        <color rgba="0.4 0.4 0.4 0.4"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_floor_under_base" type="fixed">
+    <parent link="world"/>
+    <child link="floor_under_base"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Left wall at y = +0.55, spanning x=[-0.30, +1.00], z=[-0.10, +0.55] -->
+  <link name="left_wall">
+    <collision>
+      <origin xyz="0.35 0.55 0.225" rpy="0 0 0"/>
+      <geometry>
+        <box size="1.30 0.02 0.65"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.35 0.55 0.225" rpy="0 0 0"/>
+      <geometry>
+        <box size="1.30 0.02 0.65"/>
+      </geometry>
+      <material name="wall_blue">
+        <color rgba="0.2 0.4 0.8 0.35"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_left_wall" type="fixed">
+    <parent link="world"/>
+    <child link="left_wall"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Right wall at y = -0.55, spanning x=[-0.30, +1.00], z=[-0.10, +0.55] -->
+  <link name="right_wall">
+    <collision>
+      <origin xyz="0.35 -0.55 0.225" rpy="0 0 0"/>
+      <geometry>
+        <box size="1.30 0.02 0.65"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.35 -0.55 0.225" rpy="0 0 0"/>
+      <geometry>
+        <box size="1.30 0.02 0.65"/>
+      </geometry>
+      <material name="wall_blue">
+        <color rgba="0.2 0.4 0.8 0.35"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_right_wall" type="fixed">
+    <parent link="world"/>
+    <child link="right_wall"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Back wall at x = -0.40 -->
+  <link name="back_wall">
+    <collision>
+      <origin xyz="-0.40 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 1.00 0.50"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="-0.40 0 0.15" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.02 1.00 0.50"/>
+      </geometry>
+      <material name="wall_blue">
+        <color rgba="0.2 0.4 0.8 0.35"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_back_wall" type="fixed">
+    <parent link="world"/>
+    <child link="back_wall"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Ceiling at z = 0.65 -->
+  <link name="ceiling">
+    <collision>
+      <origin xyz="0 0 0.651" rpy="0 0 0"/>
+      <geometry>
+        <box size="40.0 1.00 0.002"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0.651" rpy="0 0 0"/>
+      <geometry>
+        <box size="40.0 1.00 0.002"/>
+      </geometry>
+      <material name="ceiling_gray">
+        <color rgba="0.6 0.6 0.6 0.25"/>
+      </material>
+    </visual>
+  </link>
+  <joint name="world_to_ceiling" type="fixed">
+    <parent link="world"/>
+    <child link="ceiling"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

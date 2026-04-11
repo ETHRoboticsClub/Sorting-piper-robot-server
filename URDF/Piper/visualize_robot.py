@@ -5,7 +5,7 @@ import os
 
 # --- Configuration ---
 # The name of your URDF file.
-URDF_FILENAME = "dual_piper.urdf"
+URDF_FILENAME = "piper_description.urdf"
 
 # Check if the URDF file exists in the current directory.
 if not os.path.exists(URDF_FILENAME):

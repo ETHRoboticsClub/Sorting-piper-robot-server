@@ -16,7 +16,7 @@ robot:
     enabled: true
   vr_to_robot_scale: 1.0
   send_interval: 0.05
-  ground_height: -0.05
+  ground_height: -0.30
 
 control:
   keyboard:
@@ -30,7 +30,7 @@ control:
     enabled: true
 
 paths:
-  urdf_path: URDF/Piper/dual_piper.urdf
+  urdf_path: URDF/Piper/piper_description.urdf
   deposit_pose_file: data/deposit_pose.yaml
 
 gripper:
@@ -40,6 +40,7 @@ gripper:
 ik:
   use_reference_poses: false
   reference_poses_file: reference_poses.json
+  collision_space_urdf: URDF/Piper/collision_space_single_arm.urdf
   position_error_threshold: 0.001
   hysteresis_threshold: 0.01
   movement_penalty_weight: 0.01

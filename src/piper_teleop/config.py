@@ -33,11 +33,12 @@ DEFAULT_CONFIG = {
         "vr": {"enabled": True},
         "pybullet": {"enabled": True},
     },
-    "paths": {"urdf_path": "URDF/Piper/dual_piper.urdf", "deposit_pose_file": "data/deposit_pose.yaml"},
+    "paths": {"urdf_path": "URDF/Piper/piper_description.urdf", "deposit_pose_file": "data/deposit_pose.yaml"},
     "gripper": {"open_angle": 0.0, "closed_angle": 45.0},
     "ik": {
         "use_reference_poses": False,
         "reference_poses_file": "reference_poses.json",
+        "collision_space_urdf": "URDF/Piper/collision_space_single_arm.urdf",
         "position_error_threshold": 0.001,
         "hysteresis_threshold": 0.01,
         "movement_penalty_weight": 0.01,
@@ -182,6 +183,7 @@ REFERENCE_POSES_FILE = _config_data["ik"]["reference_poses_file"]
 IK_POSITION_ERROR_THRESHOLD = _config_data["ik"]["position_error_threshold"]
 IK_HYSTERESIS_THRESHOLD = _config_data["ik"]["hysteresis_threshold"]
 IK_MOVEMENT_PENALTY_WEIGHT = _config_data["ik"]["movement_penalty_weight"]
+IK_COLLISION_SPACE_URDF = _config_data["ik"].get("collision_space_urdf")
 
 # --- Joint Configuration ---
 JOINT_NAMES = ["joint_0", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
@@ -242,7 +244,7 @@ class TelegripConfig:
     resume: bool = False
     root: Path = Path(__file__).parents[2] / "data"
     single_arm: bool = True
-    # When single_arm: which arm's joints go into LeRobot state/action ("auto" = only right if only right connected, else left).
+    # Single-arm recorder side selection ("auto" = use physically connected side).
     single_arm_record_side: str = "auto"
     cams: Optional[Dict[str, Any]] = None
     dof: int = 7
@@ -268,9 +270,9 @@ class TelegripConfig:
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (
-        "/home/arc_user/Sorting-piper-robot-server/outputs/train/training_4090/090000/pretrained_model"
+        "/home/arc_user/Sorting-piper-robot-server/outputs/train/test_single_arm111/checkpoints/000500/pretrained_model"
     )
-    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/merged/20260409_final_mix"
+    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/2026-04-11_10-47-28_video" #Data used for training
     enable_visualization: bool = True
     autoconnect: bool = False
     log_level: str = "warning"
@@ -285,6 +287,7 @@ class TelegripConfig:
     ik_position_error_threshold: float = IK_POSITION_ERROR_THRESHOLD
     ik_hysteresis_threshold: float = IK_HYSTERESIS_THRESHOLD
     ik_movement_penalty_weight: float = IK_MOVEMENT_PENALTY_WEIGHT
+    collision_space_urdf: str | None = IK_COLLISION_SPACE_URDF
 
     # Gripper settings
     gripper_open_angle: float = GRIPPER_OPEN_ANGLE
@@ -336,6 +339,12 @@ class TelegripConfig:
     def get_absolute_reference_poses_path(self) -> str:
         """Get absolute path to reference poses file."""
         return str(get_absolute_path(self.reference_poses_file))
+
+    def get_absolute_collision_space_path(self) -> str | None:
+        """Get absolute path to collision space URDF, if configured."""
+        if not self.collision_space_urdf:
+            return None
+        return str(get_absolute_path(self.collision_space_urdf))
 
     def get_absolute_ssl_paths(self) -> tuple:
         """Get absolute paths to SSL certificate files."""

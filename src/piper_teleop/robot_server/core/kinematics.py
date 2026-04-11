@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import tempfile
+import xml.etree.ElementTree as ET
 
 import casadi
 import meshcat.geometry as mg
@@ -65,6 +66,20 @@ def quaternion_from_matrix(matrix):
     return np.array([qx, qy, qz, qw])
 
 
+def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return np.array(
+        [
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ],
+        dtype=float,
+    )
+
+
 def _make_mesh_paths_absolute(urdf_path: str) -> str:
     """
     Convert relative mesh paths in URDF to absolute paths.
@@ -104,7 +119,7 @@ def _make_mesh_paths_absolute(urdf_path: str) -> str:
 
 
 class Arm_IK:
-    def __init__(self, urdf_path: str, ground_height: float = 0.0):
+    def __init__(self, urdf_path: str, ground_height: float = 0.0, collision_space_urdf: str | None = None):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
 
         # Create temporary URDF with absolute mesh paths
@@ -128,17 +143,21 @@ class Arm_IK:
         for link in self.robot.model.frames:
             print("Link name:", link.name)
 
-        self.mixed_jointsToLockIDs = ["joint7", "joint8", "arm2_joint7", "arm2_joint8"]
+        # Single-arm model: lock gripper mimic joints in IK optimization.
+        self.mixed_jointsToLockIDs = ["joint7", "joint8"]
 
         self.reduced_robot = self.robot.buildReducedRobot(
             list_of_joints_to_lock=self.mixed_jointsToLockIDs,
             reference_configuration=np.array([0] * self.robot.model.nq),
         )
 
-        # Add ground plane geometry to collision model
+        # Add environment geometry used by collision checks.
         self.ground_height = ground_height
-        self.exclude_from_ground_collision = ["base_link_0", "arm2_base_link_0"]
+        self.environment_geom_names: set[str] = set()
+        self.environment_boxes: list[tuple[str, np.ndarray, list[float]]] = []
+        self.exclude_from_ground_collision = ["base_link_0"]
         self._add_ground_plane()
+        self._add_collision_space_from_urdf(collision_space_urdf)
         self._init_collision_pairs()
 
         self.first_matrix = create_transformation_matrix(0, 0, 0, 0, -1.57, 0.0) #self.first_matrix = create_transformation_matrix(0, 0, 0, 0, -1.57, 0) original, adjusted to keep jaw at 0 , perhaps a mounting issue
@@ -158,18 +177,6 @@ class Arm_IK:
             )
         )
 
-        self.reduced_robot.model.addFrame(
-            pin.Frame(
-                "arm2_ee",
-                self.reduced_robot.model.getJointId("arm2_joint6"),
-                pin.SE3(
-                    pin.Quaternion(q[3], q[0], q[1], q[2]),
-                    np.array([self.last_matrix[0, 3], self.last_matrix[1, 3], self.last_matrix[2, 3]]),
-                ),
-                pin.FrameType.OP_FRAME,
-            )
-        )
-
         self.geometry_data = pin.GeometryData(self.geom_model)
 
         self.init_data = np.zeros(self.reduced_robot.model.nq)
@@ -179,13 +186,15 @@ class Arm_IK:
         self.vis = MeshcatVisualizer(
             self.reduced_robot.model, self.reduced_robot.collision_model, self.reduced_robot.visual_model
         )
-        self.vis.initViewer(open=False)
+        self.vis.initViewer(open=True)
         self.vis.loadViewerModel("pinocchio")
-        self.vis.displayFrames(True, frame_ids=[113, 114], axis_length=0.15, axis_width=5)
+        # Keep frame clutter off in normal use; we visualize explicit EE targets below.
+        self.vis.displayFrames(False)
         self.vis.display(pin.neutral(self.reduced_robot.model))
+        self._visualize_environment_boxes()
 
         # Enable display of end effector target frames with short axis lengths
-        frame_viz_names = ["ee_target_1", "ee_target_2"]
+        frame_viz_names = ["ee_target_1"]
         FRAME_AXIS_POSITIONS = (
             np.array([[0, 0, 0], [1, 0, 0], [0, 0, 0], [0, 1, 0], [0, 0, 0], [0, 0, 1]]).astype(np.float32).T
         )
@@ -216,47 +225,30 @@ class Arm_IK:
         cq = casadi.SX.sym("q", self.reduced_robot.model.nq, 1)
         cpin.framesForwardKinematics(self.cmodel, self.cdata, cq)
 
-        # Create a unified solver for both arms
-        self.solver = self._create_dual_ik_solver(cq)
+        # Create a single-arm solver
+        self.solver = self._create_single_ik_solver(cq)
 
-    def _create_dual_ik_solver(self, cq):
-        """Creates and configures a unified IK solver for both end-effectors."""
-        # Define symbolic variables for the target poses first
-        cTf1 = casadi.SX.sym("tf1", 4, 4)
-        cTf2 = casadi.SX.sym("tf2", 4, 4)
+    def _create_single_ik_solver(self, cq):
+        """Create and configure single-arm IK solver."""
+        cTf = casadi.SX.sym("tf", 4, 4)
 
-        # Define the error function for the first arm using the pre-defined cTf1
-        gripper_id_1 = self.reduced_robot.model.getFrameId("ee")
-        error_expr1 = casadi.vertcat(cpin.log6(self.cdata.oMf[gripper_id_1].inverse() * cpin.SE3(cTf1)).vector)
-        error1 = casadi.Function("error1", [cq, cTf1], [error_expr1])
-
-        # Define the error function for the second arm using the pre-defined cTf2
-        gripper_id_2 = self.reduced_robot.model.getFrameId("arm2_ee")
-        error_expr2 = casadi.vertcat(cpin.log6(self.cdata.oMf[gripper_id_2].inverse() * cpin.SE3(cTf2)).vector)
-        error2 = casadi.Function("error2", [cq, cTf2], [error_expr2])
+        gripper_id = self.reduced_robot.model.getFrameId("ee")
+        error_expr = casadi.vertcat(cpin.log6(self.cdata.oMf[gripper_id].inverse() * cpin.SE3(cTf)).vector)
+        error_fun = casadi.Function("error", [cq, cTf], [error_expr])
 
         # Define the optimization problem
         opti = casadi.Opti()
         var_q = opti.variable(self.reduced_robot.model.nq)
-        param_tf1 = opti.parameter(4, 4)
-        param_tf2 = opti.parameter(4, 4)
+        param_tf = opti.parameter(4, 4)
 
-        # Define the cost function for both arms
-        error_vec1 = error1(var_q, param_tf1)
-        pos_error1 = error_vec1[:3]
-        ori_error1 = error_vec1[3:]
-
-        error_vec2 = error2(var_q, param_tf2)
-        pos_error2 = error_vec2[:3]
-        ori_error2 = error_vec2[3:]
+        error_vec = error_fun(var_q, param_tf)
+        pos_error = error_vec[:3]
+        ori_error = error_vec[3:]
 
         weight_position = 1.0
         weight_orientation = 0.1
 
-        cost_arm1 = casadi.sumsqr(weight_position * pos_error1) + casadi.sumsqr(weight_orientation * ori_error1)
-        cost_arm2 = casadi.sumsqr(weight_position * pos_error2) + casadi.sumsqr(weight_orientation * ori_error2)
-
-        total_cost = cost_arm1 + cost_arm2
+        total_cost = casadi.sumsqr(weight_position * pos_error) + casadi.sumsqr(weight_orientation * ori_error)
         regularization = casadi.sumsqr(var_q)
 
         # Add constraints
@@ -273,48 +265,50 @@ class Arm_IK:
         opts = {"ipopt": {"print_level": 0, "max_iter": 50, "tol": 1e-4}, "print_time": False}
         opti.solver("ipopt", opts)
 
-        # Return a dictionary containing all necessary components for this solver
-        return {"opti": opti, "var_q": var_q, "param_tf1": param_tf1, "param_tf2": param_tf2}
+        return {"opti": opti, "var_q": var_q, "param_tf": param_tf}
 
     def _init_collision_pairs(self):
         for i in range(self.geom_model.ngeoms):
             print("Geometry object:", self.geom_model.geometryObjects[i].name)
 
-        arm1_indices = [0] + list(range(11, 20))
-        arm2_indices = list(range(1, 11))
+        # Conservative self-collision checks for a single arm, mirroring the previous
+        # dual-arm strategy where only non-neighbor link groups were tested.
+        geom_name_to_idx = {self.geom_model.geometryObjects[i].name: i for i in range(self.geom_model.ngeoms)}
+        arm_geom_order = [
+            "base_link_0",
+            "link1_0",
+            "link2_0",
+            "link3_0",
+            "link4_0",
+            "link5_0",
+            "link6_0",
+            "gripper_base_0",
+            "link7_0",
+            "link8_0",
+        ]
+        arm_indices = [geom_name_to_idx[name] for name in arm_geom_order if name in geom_name_to_idx]
+        if len(arm_indices) >= 9:
+            for i in range(0, 3):
+                for j in range(4, 9):
+                    geom1_idx = arm_indices[i]
+                    geom2_idx = arm_indices[j]
+                    if abs(i - j) > 1:
+                        self.geom_model.addCollisionPair(pin.CollisionPair(geom1_idx, geom2_idx))
 
-        for i in range(0, 3):
-            for j in range(4, 9):
-                geom1_idx = arm1_indices[i]
-                geom2_idx = arm1_indices[j]
-                # Avoid checking adjacent links
-                if abs(geom1_idx - geom2_idx) > 1:
-                    self.geom_model.addCollisionPair(pin.CollisionPair(geom1_idx, geom2_idx))
-
-        for i in range(0, 3):
-            for j in range(4, 9):
-                geom1_idx = arm2_indices[i]
-                geom2_idx = arm2_indices[j]
-                # Avoid checking adjacent links
-                if abs(geom1_idx - geom2_idx) > 1:
-                    self.geom_model.addCollisionPair(pin.CollisionPair(geom1_idx, geom2_idx))
-
-        for geom1_idx in arm1_indices:
-            for geom2_idx in arm2_indices:
-                # Exclude collision check between the two base links
-                if geom1_idx == 0 and geom2_idx == 1:
-                    continue
-                self.geom_model.addCollisionPair(pin.CollisionPair(geom1_idx, geom2_idx))
-
-        # Add collision pairs between robot links and ground plane
-        ground_plane_idx = self.geom_model.ngeoms - 1
-        for i in range(self.geom_model.ngeoms - 1):  # All robot links
+        env_indices = [
+            i
+            for i in range(self.geom_model.ngeoms)
+            if self.geom_model.geometryObjects[i].name in self.environment_geom_names
+        ]
+        for i in range(self.geom_model.ngeoms):
+            if i in env_indices:
+                continue
             geom_name = self.geom_model.geometryObjects[i].name
-
-            if geom_name not in self.exclude_from_ground_collision:
-                self.geom_model.addCollisionPair(pin.CollisionPair(i, ground_plane_idx))
-            else:
-                logger.debug(f"Excluding {geom_name} from ground collision detection")
+            if geom_name in self.exclude_from_ground_collision:
+                logger.debug("Excluding %s from environment collision detection", geom_name)
+                continue
+            for env_idx in env_indices:
+                self.geom_model.addCollisionPair(pin.CollisionPair(i, env_idx))
 
     def _add_ground_plane(self):
         """Add a ground plane geometry to the collision model for ground collision detection."""
@@ -324,25 +318,108 @@ class Arm_IK:
 
         ground_geometry = pin.GeometryObject("ground_plane", 0, pin.hppfcl.Box(*ground_size), ground_pose)
         self.geom_model.addGeometryObject(ground_geometry)
+        self.environment_geom_names.add("ground_plane")
+        ground_tf = np.eye(4, dtype=float)
+        ground_tf[:3, 3] = ground_pose.translation
+        self.environment_boxes.append(("ground_plane", ground_tf, ground_size))
         logger.info(f"Added ground plane at height {self.ground_height}")
 
-    def ik_fun(self, target_pose_1, target_pose_2, gripper=0, motorstate=None, motorV=None, visualize=True):
+    def _add_collision_space_from_urdf(self, collision_space_urdf: str | None):
+        """Load collision-only box geometries from an environment URDF."""
+        if not collision_space_urdf:
+            return
+        env_urdf = os.path.abspath(collision_space_urdf)
+        if not os.path.exists(env_urdf):
+            logger.warning("Collision space URDF not found: %s", env_urdf)
+            return
+
+        try:
+            tree = ET.parse(env_urdf)
+            root = tree.getroot()
+        except Exception as exc:
+            logger.error("Failed to parse collision space URDF %s: %s", env_urdf, exc)
+            return
+
+        joint_origins: dict[str, np.ndarray] = {}
+        for joint in root.findall("joint"):
+            child = joint.find("child")
+            origin = joint.find("origin")
+            if child is None or child.get("link") is None:
+                continue
+            xyz = np.array([0.0, 0.0, 0.0], dtype=float)
+            rpy = np.array([0.0, 0.0, 0.0], dtype=float)
+            if origin is not None:
+                if origin.get("xyz"):
+                    xyz = np.array([float(v) for v in origin.get("xyz").split()], dtype=float)
+                if origin.get("rpy"):
+                    rpy = np.array([float(v) for v in origin.get("rpy").split()], dtype=float)
+            tf = np.eye(4, dtype=float)
+            tf[:3, :3] = _rpy_to_matrix(rpy[0], rpy[1], rpy[2])
+            tf[:3, 3] = xyz
+            joint_origins[child.get("link")] = tf
+
+        added = 0
+        for link in root.findall("link"):
+            link_name = link.get("name")
+            if not link_name:
+                continue
+            link_tf = joint_origins.get(link_name, np.eye(4, dtype=float))
+            for idx, collision in enumerate(link.findall("collision")):
+                geometry = collision.find("geometry")
+                if geometry is None:
+                    continue
+                box = geometry.find("box")
+                if box is None or not box.get("size"):
+                    continue
+                size = [float(v) for v in box.get("size").split()]
+
+                local_tf = np.eye(4, dtype=float)
+                origin = collision.find("origin")
+                if origin is not None:
+                    if origin.get("xyz"):
+                        local_tf[:3, 3] = [float(v) for v in origin.get("xyz").split()]
+                    if origin.get("rpy"):
+                        rpy = [float(v) for v in origin.get("rpy").split()]
+                        local_tf[:3, :3] = _rpy_to_matrix(rpy[0], rpy[1], rpy[2])
+
+                world_tf = link_tf @ local_tf
+                se3 = pin.SE3(world_tf[:3, :3], world_tf[:3, 3])
+                geom_name = f"env_{link_name}_{idx}"
+                geom_obj = pin.GeometryObject(geom_name, 0, pin.hppfcl.Box(*size), se3)
+                self.geom_model.addGeometryObject(geom_obj)
+                self.environment_geom_names.add(geom_name)
+                tf = np.eye(4, dtype=float)
+                tf[:3, :3] = world_tf[:3, :3]
+                tf[:3, 3] = world_tf[:3, 3]
+                self.environment_boxes.append((geom_name, tf, size))
+                added += 1
+
+        logger.info("Added %d collision-space geometries from %s", added, env_urdf)
+
+    def _visualize_environment_boxes(self):
+        """Render collision-space boxes in Meshcat for debugging."""
+        for name, tf, size in self.environment_boxes:
+            node_name = f"collision_space/{name}"
+            self.vis.viewer[node_name].set_object(
+                mg.Box(size),
+                mg.MeshBasicMaterial(color=0x3A7DFF, opacity=0.25, transparent=True),
+            )
+            self.vis.viewer[node_name].set_transform(tf)
+
+    def ik_fun(self, target_pose, gripper=0, motorstate=None, motorV=None, visualize=True):
         opti = self.solver["opti"]
         var_q = self.solver["var_q"]
-        param_tf1 = self.solver["param_tf1"]
-        param_tf2 = self.solver["param_tf2"]
+        param_tf = self.solver["param_tf"]
 
-        gripper = np.array([gripper / 2.0, -gripper / 2.0])
+        gripper_vec = np.array([gripper / 2.0, -gripper / 2.0])
         if motorstate is not None:
             self.init_data = motorstate
         opti.set_initial(var_q, self.init_data)
 
         if visualize:
-            self.vis.viewer["ee_target_1"].set_transform(target_pose_1)
-            self.vis.viewer["ee_target_2"].set_transform(target_pose_2)
+            self.vis.viewer["ee_target_1"].set_transform(target_pose)
 
-        opti.set_value(param_tf1, target_pose_1)
-        opti.set_value(param_tf2, target_pose_2)
+        opti.set_value(param_tf, target_pose)
 
         try:
             opti.solve_limited()
@@ -361,23 +438,32 @@ class Arm_IK:
                 # print("sol_q:", sol_q)
                 self.vis.display(sol_q)
 
-            is_collision = self.check_collision(sol_q, gripper_1=gripper, gripper_2=gripper)
+            is_collision = self.check_collision(sol_q, gripper=gripper_vec)
             return sol_q, is_collision
 
         except Exception as e:
             print(f"ERROR in convergence, plotting debug info.{e}")
             return None, False
 
-    def check_collision(self, q, gripper_1=np.array([0, 0]), gripper_2=np.array([0, 0])):
+    def check_collision(self, q, gripper=np.array([0, 0])):
         """Check for collisions including self-collision and ground plane collision."""
-        pin.forwardKinematics(
-            self.robot.model, self.robot.data, np.concatenate([q[0:6], gripper_1, q[6:12], gripper_2], axis=0)
-        )
+        full_q = np.concatenate([q[0:6], gripper], axis=0)
+        pin.forwardKinematics(self.robot.model, self.robot.data, full_q)
         pin.updateGeometryPlacements(self.robot.model, self.robot.data, self.geom_model, self.geometry_data)
-        collision = pin.computeCollisions(self.geom_model, self.geometry_data, False)
-        if collision:
-            logger.error("❌ Collision detected")
-        return collision
+        pin.computeCollisions(self.geom_model, self.geometry_data, False)
+
+        has_collision = False
+        first_pair = None
+        for i, pair in enumerate(self.geom_model.collisionPairs):
+            if self.geometry_data.collisionResults[i].isCollision():
+                has_collision = True
+                if first_pair is None:
+                    g1 = self.geom_model.geometryObjects[pair.first].name
+                    g2 = self.geom_model.geometryObjects[pair.second].name
+                    first_pair = (g1, g2)
+        if first_pair:
+            logger.debug("Collision detected: %s <-> %s", first_pair[0], first_pair[1])
+        return has_collision
 
     def get_dist(self, q, xyz):
         pin.forwardKinematics(self.reduced_robot.model, self.reduced_robot.data, np.concatenate([q], axis=0))

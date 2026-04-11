@@ -1,8 +1,8 @@
 # Piper Robot Server
 
-Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboard**, or **gamepad** goals, optional **cameras** and **LeRobot** recording. The URDF and IK stack are **dual-arm**; the default config (`single_arm: true`) matches **one** physical follower for typical datasets.
+Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboard**, or **gamepad** goals, optional **cameras** and **LeRobot** recording. Runtime in this repo is **single-arm only** and uses `URDF/Piper/piper_description.urdf`.
 
-**Optional setups:** leader–follower (`--leader`, four CAN links), dual followers (`single_arm: false`), trained policy (`--policy`).
+**Optional setups:** trained policy (`--policy`).
 
 ---
 
@@ -10,7 +10,7 @@ Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboa
 
 | Requirement | Notes |
 |-------------|--------|
-| Hardware | At least one Piper **follower** + USB-CAN for real robot control. Optional: second follower, leader arms (see [CAN](#can-bus-setup)). |
+| Hardware | One Piper **follower** + USB-CAN for real robot control (single-arm runtime). |
 | Conda | Miniconda/Anaconda (Pinocchio is installed from conda-forge). |
 | Python | **3.10** in the conda env (`pyproject.toml` allows ≥3.8; lab uses 3.10). |
 | Tactile SDK | `tactile-teleop-python-sdk` (clone + `pip install -e .`). |
@@ -69,11 +69,10 @@ Piper uses **CAN**; the SDK expects **stable interface names** (not only `can0`)
 |-----------|----------------|
 | `left_piper` | Follower “left” bus |
 | `right_piper` | Follower “right” bus |
-| `leader_left`, `leader_right` | Leader–follower only (`ENABLE_LEADER_ARMS=true` in `can_config.sh`) |
 
 **Tools (once):** `sudo apt update && sudo apt install -y ethtool can-utils`
 
-### One follower + one adapter
+### One follower + one adapter (recommended)
 
 1. `ip -br link show type can` — note the interface (often `can0`).
 2. Optional: bus-info for persistent naming — `bash src/piper_teleop/robot_server/find_all_can_port.sh`
@@ -88,7 +87,28 @@ Piper uses **CAN**; the SDK expects **stable interface names** (not only `can0`)
 
 4. If only **`left_piper`** exists, the right bus may **fail to connect** in logs; teleop still works for the connected arm. Use the **left** keyboard column for the arm on `left_piper`.
 
-### Two followers
+### Bringup / restart checklist (important)
+
+If the arm does not respond or CAN looks unstable:
+
+1. Stop `robotserver` (`Ctrl+C`).
+2. Unplug USB-CAN from the PC.
+3. Wait 2-3 seconds, then plug USB-CAN back in.
+4. Re-run CAN setup:
+
+   ```bash
+   sudo bash src/piper_teleop/robot_server/can_config.sh
+   ```
+
+5. Verify interfaces:
+
+   ```bash
+   ip -br link show type can
+   ```
+
+6. Start the server again (`robotserver --keyboard` or `robotserver --gamepad`).
+
+### Legacy multi-arm notes (not used in this repo runtime)
 
 Edit `USB_PORTS` in `src/piper_teleop/robot_server/can_config.sh`, then:
 
@@ -96,16 +116,7 @@ Edit `USB_PORTS` in `src/piper_teleop/robot_server/can_config.sh`, then:
 sudo bash src/piper_teleop/robot_server/can_config.sh
 ```
 
-Set `single_arm: false` in config when recording both arms. Confirm `ip -br link show type can` shows `left_piper` and `right_piper` UP.
-
-### Leader–follower (four CAN devices)
-
-Map all four interfaces in `can_config.sh`, then:
-
-```bash
-ENABLE_LEADER_ARMS=true sudo bash src/piper_teleop/robot_server/can_config.sh
-robotserver --leader --keyboard
-```
+Use one follower CAN interface (`left_piper` or `right_piper`) for single-arm recording.
 
 ### Run after CAN is up
 
@@ -151,7 +162,6 @@ Use `--no-cameras` when testing without devices (cannot combine with `--record` 
 | `--vis` | Meshcat. |
 | `--no-cameras` | No camera processes. |
 | `--record` / `--resume` | LeRobot-style recording (needs cameras in recording/hybrid). |
-| `--leader` | Leader–follower (four CAN links configured). |
 | `--policy` | Learned policy (see [Policy](#policy)); mutually exclusive with keyboard/gamepad/record. |
 | `--repo-id` | Dataset repo id when recording. |
 | `--log-level` | `debug` … `critical` (default `info`). |
@@ -171,7 +181,7 @@ robotserver --no-robot --vis --gamepad --no-cameras
 
 ## Keyboard teleop
 
-Focus the terminal (`pynput`). With **one** follower on `left_piper`, **both** columns drive that arm; with two followers, columns map left vs right.
+Focus the terminal (`pynput`). With one follower connected, both keyboard columns can drive the same active arm.
 
 | Action | Left arm | Right arm |
 |--------|----------|-----------|
@@ -198,6 +208,13 @@ Plug the controller in **before** starting the server. Mapping matches `gamepad_
 
 Step sizes come from `pos_step` / `angle_step` in config. Use `--ee-world` for world-fixed roll/pitch/yaw instead of end-effector frame.
 
+Important usage notes:
+
+- Start command (no VR dependency): `robotserver --gamepad`.
+- Keep one hand near gripper open (`Circle`) when testing new spaces or policies.
+- If controls seem dead, restart with controller already plugged in.
+- If the arm appears blocked, check collision-space limits (walls/floor/ceiling) and run with `--log-level debug` to see collision pair messages.
+
 ---
 
 ## Gripper frame vs simulation (optional tuning)
@@ -209,7 +226,7 @@ If the Meshcat gripper orientation looks **~90°** off the physical tool, the fi
 ## Recording workflow
 
 1. Set cameras to `recording` or `hybrid` in config.
-2. `robotserver --record` (or `--record --leader` if using leaders).
+2. `robotserver --record`.
 3. **Recording hotkeys:** `→` cycle states, `←` discard episode, `Esc` stop session.
 4. Data under `data/YYYY-MM-DD_HH-MM-SS/`.
 
@@ -230,10 +247,19 @@ Tested with **ACT**-style policies trained in LeRobot. Copy checkpoints under `p
 
 ```bash
 robotserver --policy
+
+Training environment note (current known-good setup for this repo):
+
+```bash
+conda activate piper_new_backup
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+```
+
+For video datasets, prefer `--dataset.video_backend=pyav` during `lerobot-train`.
 ```
 
 ---
 
 ## Internal model note
 
-The stack uses a **dual-arm URDF** even when only **one** arm is connected; IK and visualization still instantiate both chains. Single-arm operation is a **configuration** choice, not a separate binary.
+The stack is configured for single-arm model + single-arm IK/control only.

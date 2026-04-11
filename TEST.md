@@ -1,9 +1,9 @@
 ```bash
 lerobot-train \
-  --dataset.repo_id=/home/arc_user/Sorting-piper-robot-server/data/merged_51_ep \
+  --dataset.repo_id=/home/arc_user/Sorting-piper-robot-server/data/2026-04-11_10-47-28_video \
   --policy.type=act \
-  --output_dir=outputs/train/act_merged \
-  --job_name=act_merged \
+  --output_dir=outputs/train/test_single_arm \
+  --job_name=act_single_arm \
   --policy.device=cuda \
   --wandb.enable=true \
   --policy.repo_id=${HF_USER}/act_policy
@@ -33,11 +33,14 @@ conda activate piper_new_backup
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
 lerobot-train \
-  --dataset.repo_id=/home/arc_user/Sorting-piper-robot-server/data/merged/20260409_final_mix \
+  --dataset.repo_id=/home/arc_user/Sorting-piper-robot-server/data/2026-04-11_10-47-28_video \
   --dataset.video_backend=pyav \
   --policy.type=act \
-  --output_dir=/home/arc_user/Sorting-piper-robot-server/outputs/train/act_20260409_final_mix_smoke_pyav \
-  --job_name=act_20260409_final_mix_smoke_pyav \
+  --output_dir=outputs/train/test_single_arm111 \
+  --job_name=test11 \
   --policy.device=cuda \
   --policy.repo_id=${HF_USER}/act_20260409_final_mix_smoke_pyav \
   --steps=500
+
+
+  

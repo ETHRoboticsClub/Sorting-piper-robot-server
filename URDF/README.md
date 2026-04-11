@@ -1,10 +1,9 @@
-# SO100
+# Piper URDFs
 
-This is the 6DOF SO100 arm. The original assets are from [here](https://github.com/TheRobotStudio/SO-ARM100) and were provided under a [Apache 2.0 License](LICENSE)
+This folder contains Piper arm URDF assets.
 
-Changes made:
-- Fixed joint limits to reflect real world behavior
-- Fixed joint tags from continuous to revolute which permit joint limits
-- Fixed joint directions and orientations to match the real robot's joints
-- removed spaces in link names
-- manual decomposition of gripper link collision meshes into simpler meshes
+- `Piper/piper_description.urdf`: single-arm Piper model (default for this repo).
+- `Piper/dual_piper.urdf`: legacy dual-arm model kept for compatibility/reference.
+- `Piper/visualize_robot.py`: quick PyBullet visualizer, configured to load the single-arm URDF.
+
+Meshes are located under `Piper/assets`.
