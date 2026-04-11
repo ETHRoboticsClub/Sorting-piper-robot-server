@@ -5,6 +5,9 @@ Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboa
 **Optional setups:** trained policy (`--policy`).
 
 ---
+## TO do
+Update Readme about python verions, lerobot verison etc
+
 
 ## Prerequisites
 
