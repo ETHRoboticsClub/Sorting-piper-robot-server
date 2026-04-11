@@ -52,6 +52,11 @@ class LerobotPolicy:
             make_default_processors()
         )
 
+    def reset(self) -> None:
+        self.policy.reset()
+        self.preprocessor.reset()
+        self.postprocessor.reset()
+
     def convert_actions_to_dict(self, actions: dict, single_arm_side: str = "right") -> tuple[dict, dict]:
         dict_left = dict()
         dict_right = dict()
