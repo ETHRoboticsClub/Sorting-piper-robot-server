@@ -13,8 +13,8 @@ class PiperLeader:
     def __init__(self, assert_robot_mode=False):
         self.robot_left: Optional[Piper] = None
         self.robot_right: Optional[Piper] = None
-        self.left_config = PiperConfig(port=f"leader_left", id="leader_left_piper")
-        self.right_config = PiperConfig(port=f"leader_right", id="leader_right_piper")
+        self.left_config = PiperConfig(port="leader_left", id="leader_left_piper", leader_mode=True)
+        self.right_config = PiperConfig(port="leader_right", id="leader_right_piper", leader_mode=True)
         self.assert_robot_mode = assert_robot_mode
 
     def _connect_robot(self, config: PiperConfig) -> Piper:

@@ -19,13 +19,14 @@ GRIPPER_ANGLE_MAX = 0.07  # 70mm
 
 
 class PiperSDKInterface:
-    def __init__(self, port: str = "can0"):
+    def __init__(self, port: str = "can0", leader_mode: bool = False):
         if C_PiperInterface_V2 is None:
             raise ImportError("piper_sdk is not installed.")
         self.piper = C_PiperInterface_V2(port)
         self.piper.ConnectPort()
-        while not self.piper.EnablePiper():
-            time.sleep(0.01)
+        if not leader_mode:
+            while not self.piper.EnablePiper():
+                time.sleep(0.01)
         self.piper.GripperCtrl(0, 1000, 0x01, 0)
 
         # Get the min and max positions for each joint and gripper
@@ -55,8 +56,6 @@ class PiperSDKInterface:
     def get_status(self) -> Dict[str, Any]:
         joint_status = self.piper.GetArmJointMsgs()
         gripper = self.piper.GetArmGripperMsgs()
-        gripper.gripper_state.grippers_angle
-
         joint_state = joint_status.joint_state
         obs_dict = {
             "joint_0.pos": (joint_state.joint_1 / 1000) * DEG_TO_RAD,

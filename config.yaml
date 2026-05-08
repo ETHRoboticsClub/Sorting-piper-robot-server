@@ -35,7 +35,7 @@ paths:
 
 gripper:
   open_angle: 0.0
-  closed_angle: 45.0
+  closed_angle: 70.0
 
 ik:
   use_reference_poses: false
@@ -48,8 +48,7 @@ ik:
 cameras:
   wrist1:
     type: monocular
-    backend: realsense
-    serial_number: 234322305361
+    backend: opencv
     mode: recording
     fps: "30"
     frame_width: "640"
@@ -57,12 +56,10 @@ cameras:
     capture_frame_width: "640"
     capture_frame_height: "480"
     capture_api: 200
-    cam_index: "0"
+    cam_index: "2"
   topdown:
     type: monocular
-    backend: realsense
-    serial_number: 213522251124
-    # serial_number: "030422250224"
+    backend: opencv
     mode: recording
     fps: "30"
     frame_width: "640"

@@ -13,6 +13,7 @@ from .piper_sdk_interface import PiperSDKInterface
 class PiperConfig:
     port: str
     id: str
+    leader_mode: bool = False
 
 
 class Piper:
@@ -20,7 +21,7 @@ class Piper:
     name = "piper"
 
     def __init__(self, config: PiperConfig):
-        self.sdk = PiperSDKInterface(port=config.port)
+        self.sdk = PiperSDKInterface(port=config.port, leader_mode=config.leader_mode)
 
     @property
     def _motors_ft(self) -> dict[str, type]:

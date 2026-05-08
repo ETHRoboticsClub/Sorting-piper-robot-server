@@ -70,32 +70,26 @@ DEFAULT_CONFIG = {
     "cameras": {
         "wrist1": {
             "type": "monocular",
-            "mode": "recording", # why hybrid and not recording?
+            "mode": "recording",
+            "backend": "opencv",
             "fps": "30",
             "frame_width": "640",
             "frame_height": "480",
-            "capture_frame_width": "1280", #old 640x 480
-            "capture_frame_height": "720",
-            "backend": "opencv",
             "capture_api": cv2.CAP_V4L2,
-            "cam_index": "4",
+            "cam_index": "2",
         },
         "topdown": {
             "type": "monocular",
             "mode": "recording",
+            "backend": "opencv",
             "fps": "30",
             "frame_width": "640",
             "frame_height": "480",
-            "capture_frame_width": "1280",
-            "capture_frame_height": "720",
-            "backend": "opencv",
             "capture_api": cv2.CAP_V4L2,
-            "cam_index": "8",
+            "cam_index": "0",
         },
     },
 }
-
-
 def load_config(config_path: str = "config.yaml") -> dict:
     """Load configuration from YAML file with fallback to defaults."""
     config = DEFAULT_CONFIG.copy()
