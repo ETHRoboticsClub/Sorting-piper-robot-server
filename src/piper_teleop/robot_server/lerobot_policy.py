@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -19,10 +21,20 @@ logger = logging.getLogger(__name__)
 class LerobotPolicy:
     """Slim wrapper for LeRobot policy inference."""
 
-    def __init__(self, policy_path: str, repo_id: str, device="cpu"):
+    def __init__(
+        self,
+        policy_path: str,
+        repo_id: str,
+        device="cpu",
+        rename_map: dict[str, str] | None = None,
+        task: str = "",
+    ):
         self.policy_path = str(policy_path)
         self.repo_id = repo_id
         self.device = torch.device(device)
+        self.rename_map = rename_map or {}
+        self.task = task
+        self._last_debug_ts = 0.0
 
         self.dataset = LeRobotDataset(repo_id, batch_encoding_size=1)
         self.dataset_meta = self.dataset.meta
@@ -32,21 +44,23 @@ class LerobotPolicy:
         # Override device in config to match desired device
         policy_config.device = str(self.device)
 
-        self.policy = make_policy(policy_config, ds_meta=self.dataset_meta)
+        self.policy = make_policy(policy_config, ds_meta=self.dataset_meta, rename_map=self.rename_map)
 
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=policy_config,
             pretrained_path=policy_config.pretrained_path,
-            dataset_stats=rename_stats(self.dataset_meta.stats, dict()),
+            dataset_stats=rename_stats(self.dataset_meta.stats, self.rename_map),
             preprocessor_overrides={
                 "device_processor": {"device": self.device},
-                "rename_observations_processor": {"rename_map": dict()},
+                "rename_observations_processor": {"rename_map": self.rename_map},
             },
         )
 
         self.policy.reset()
         self.preprocessor.reset()
         self.postprocessor.reset()
+
+        logger.info("LerobotPolicy loaded from %s on %s", self.policy_path, self.device)
 
         self.teleop_action_processor, self.robot_action_processor, self.robot_observation_processor = (
             make_default_processors()
@@ -83,6 +97,27 @@ class LerobotPolicy:
         dof: int = 7,
         single_arm_side: str = "right",
     ) -> np.ndarray:
+        debug_enabled = os.environ.get("POLICY_DEBUG", "0") == "1"
+        blank_wrist = os.environ.get("POLICY_BLANK_WRIST", "0") == "1"
+        if blank_wrist:
+            for k in list(cams.keys()):
+                if k.endswith(".wrist1"):
+                    cams[k] = np.zeros_like(cams[k])
+
+        debug_now = (debug_enabled or blank_wrist) and (time.time() - self._last_debug_ts) > 1.0
+        if debug_now:
+            self._last_debug_ts = time.time()
+            if blank_wrist:
+                print("[POLICY DEBUG] POLICY_BLANK_WRIST=1 -> wrist1 image zeroed", flush=True)
+            for cam_key, frame in cams.items():
+                arr = np.asarray(frame)
+                print(
+                    f"\n[POLICY DEBUG] cam {cam_key} shape={arr.shape} dtype={arr.dtype} "
+                    f"min={int(arr.min()) if arr.size else -1} "
+                    f"max={int(arr.max()) if arr.size else -1} "
+                    f"mean={float(arr.mean()) if arr.size else -1.0:.1f}",
+                    flush=True,
+                )
         obs = {k.replace("observation.images.", ""): v for k, v in cams.items()}
 
         # Single-arm ACT datasets expect observation.state names joint_0..joint_6.
@@ -111,11 +146,20 @@ class LerobotPolicy:
             preprocessor=self.preprocessor,
             postprocessor=self.postprocessor,
             use_amp=self.policy.config.use_amp,
-            task="pick and place",
+            task=self.task,
             robot_type=self.dataset_meta.robot_type,
         )
 
         act_processed = make_robot_action(action_values, self.dataset_meta.features)
         act_processed = self.robot_action_processor((act_processed, obs))
+
+        if debug_now:
+            state_vals = [obs.get(f"joint_{i}", float("nan")) for i in range(dof)]
+            action_vals = [act_processed.get(f"joint_{i}", float("nan")) for i in range(dof)]
+            print(
+                f"[POLICY DEBUG] state={[round(float(v), 3) for v in state_vals]} "
+                f"action={[round(float(v), 3) for v in action_vals]}",
+                flush=True,
+            )
 
         return self.convert_actions_to_dict(act_processed, single_arm_side=single_arm_side)

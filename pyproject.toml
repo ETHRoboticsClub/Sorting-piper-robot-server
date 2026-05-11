@@ -10,14 +10,13 @@ authors = [
     {name = "Zeno Hamers", email = "zeno@tactilerobotics.ai"},
     {name = "Alex Spiridonov", email = "alex@tactilerobotics.ai"},
 ]
-keywords = ["robotics", "teleoperation", "vr", "robot-control"]
+keywords = ["robotics", "teleoperation", "robot-control"]
 
 dependencies = [
     "opencv-python",
     "pyrealsense2",
     "pygame>=2.5",
     "pyaml",
-    "python-dotenv",
     "meshcat",
     "piper_sdk==0.3.3",
     "lerobot",

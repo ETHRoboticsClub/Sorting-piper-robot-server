@@ -1,13 +1,8 @@
 # Piper Robot Server
 
-Teleoperation server for AgileX Piper arms: **VR (Tactile / LiveKit)**, **keyboard**, or **gamepad** goals, optional **cameras** and **LeRobot** recording. Runtime in this repo is **single-arm only** and uses `URDF/Piper/piper_description.urdf`.
+Teleoperation server for AgileX Piper arms with **keyboard**, **gamepad**, or learned-policy control, optional **cameras** and **LeRobot** recording. Runtime in this repo is **single-arm only** and uses `URDF/Piper/piper_description.urdf`.
 
 **Optional setups:** trained policy (`--policy`).
-
----
-## To Do
-Update Readme about python verions, lerobot verison etc, workflow recording post processing adding togetehr, training on rtx4090 etc
-
 
 ## Prerequisites
 
@@ -15,44 +10,33 @@ Update Readme about python verions, lerobot verison etc, workflow recording post
 |-------------|--------|
 | Hardware | One Piper **follower** + USB-CAN for real robot control (single-arm runtime). |
 | Conda | Miniconda/Anaconda (Pinocchio is installed from conda-forge). |
-| Python | **3.10** in the conda env (`pyproject.toml` allows ≥3.8; lab uses 3.10). |
-| Tactile SDK | `tactile-teleop-python-sdk` (clone + `pip install -e .`). |
-| VR | Only if you use default VR control (omit `--keyboard` / `--gamepad`). |
+| Python | `environment.yml` pins **3.10**; copied lab environments such as `piper_new` may use 3.12 if all LeRobot/Piper dependencies are already installed. |
 
 ---
 
 ## Installation
 
-1. **Install the [Tactile teleop Python SDK](https://github.com/TactileRoboticsAI/tactile-teleop-python-sdk):**
+1. **Create and activate the conda environment:**
 
    ```bash
-   git clone https://github.com/TactileRoboticsAI/tactile-teleop-python-sdk.git
-   cd tactile-teleop-python-sdk
-   conda create -n piper-teleop python=3.10 -y
-   conda activate piper-teleop
-   pip install -e .
-   cd ..
+   conda env create -f environment.yml
+   conda activate piper_new
    ```
 
-2. **Clone and install this repo:**
+2. **If you did not create the env from `environment.yml`, install this repo from the repo root:**
 
    ```bash
-   git clone https://github.com/ETHRoboticsClub/Sorting-piper-robot-server.git
-   cd piper-robot-server
    pip install -e .
-   conda install pinocchio==3.2.0 casadi==3.6.7 -c conda-forge
    ```
-
-3. **Environment variables (VR):** set `TACTILE_API_KEY` in `.env` or the environment when using VR/Tactile (not needed for `--keyboard` / `--gamepad`).
 
 ---
 
 ## Quick test (no robot, no cameras)
 
-Uses Meshcat visualization and local input (no LiveKit VR session):
+Uses Meshcat visualization and local input:
 
 ```bash
-conda activate piper
+conda activate piper_new
 robotserver --no-robot --vis --keyboard --no-cameras
 ```
 
@@ -146,9 +130,9 @@ python scripts/find_cameras.py
 
 Per camera, `mode` is one of:
 
-- **`recording`** — dataset only (no VR stream).
-- **`hybrid`** — VR + record.
-- **`streaming`** — VR only (not written for recording).
+- **`recording`** — dataset recording only.
+- **`hybrid`** — recording plus live camera preview/streaming.
+- **`streaming`** — live preview/streaming only (not written for recording).
 
 Use `--no-cameras` when testing without devices (cannot combine with `--record` if recording requires camera frames — recording requires at least one camera in `recording` or `hybrid` mode).
 
@@ -158,18 +142,23 @@ Use `--no-cameras` when testing without devices (cannot combine with `--record` 
 
 | Flag | Effect |
 |------|--------|
-| *(default)* | VR / Tactile goals (`connect_vr_controller`); needs API key / session. |
-| `--keyboard` | Local keyboard; no VR connection. |
+| `--keyboard` | Local keyboard control. |
 | `--gamepad` | Analog PS4-style gamepad (`gamepad_controller.py`). |
 | `--no-robot` | No hardware; sim / visualization path. |
 | `--vis` | Meshcat. |
 | `--no-cameras` | No camera processes. |
 | `--record` / `--resume` | LeRobot-style recording (needs cameras in recording/hybrid). |
-| `--policy` | Learned policy (see [Policy](#policy)); mutually exclusive with keyboard/gamepad/record. |
+| `--policy` | Learned policy (see [Policy](#policy)); use with `--gamepad` to toggle policy on/off. |
+| `--policy-type act\|smolvla` | Policy family; controls camera feature renaming. Required with `--policy`. |
+| `--policy-path` | Policy checkpoint path or Hugging Face repo id. Required with `--policy`. |
+| `--policy-repo-id` | LeRobot dataset root/repo id used for feature metadata and normalization stats. Required with `--policy`. |
+| `--policy-device` | `cuda`, `cpu`, or `auto` for policy inference. |
 | `--repo-id` | Dataset repo id when recording. |
 | `--log-level` | `debug` … `critical` (default `info`). |
+| `--show-cameras` | Show local camera preview windows. |
 
 Use **exactly one** of `--keyboard` or `--gamepad`.
+Policy mode cannot be combined with `--keyboard`, `--leader`, or `--resume`. Recording while policy is enabled requires `--gamepad`, because Share toggles between manual gamepad control and policy control.
 
 **Examples**
 
@@ -178,6 +167,7 @@ robotserver --keyboard
 robotserver --no-robot --vis --keyboard --no-cameras
 robotserver --record
 robotserver --no-robot --vis --gamepad --no-cameras
+robotserver --show-cameras --policy --gamepad --policy-type act --policy-path /path/to/pretrained_model --policy-repo-id /path/to/training_dataset
 ```
 
 ---
@@ -208,12 +198,14 @@ Plug the controller in **before** starting the server. Mapping matches `gamepad_
 | Roll / pitch | Right stick horizontal / vertical (axes 3 / 4) (EE frame) |
 | Gripper closed / open | Cross / Circle |
 | Reset EE | Square |
+| Primary dropoff pose | Triangle |
+| Secondary dropoff pose | Options |
 
 Step sizes come from `pos_step` / `angle_step` in config. Use `--ee-world` for world-fixed roll/pitch/yaw instead of end-effector frame.
 
 Important usage notes:
 
-- Start command (no VR dependency): `robotserver --gamepad`.
+- Start command: `robotserver --gamepad`.
 - Keep one hand near gripper open (`Circle`) when testing new spaces or policies.
 - If controls seem dead, restart with controller already plugged in.
 - If the arm appears blocked, check collision-space limits (walls/floor/ceiling) and run with `--log-level debug` to see collision pair messages.
@@ -246,20 +238,78 @@ Visualizer: [LeRobot dataset visualizer](https://huggingface.co/spaces/lerobot/v
 
 ## Policy
 
-Tested with **ACT**-style policies trained in LeRobot. Copy checkpoints under `policy_checkpoint/`, set `policy_path` and `policy_repo_id` in `config.py`, then:
+Policy deployment uses LeRobot checkpoints and the dataset metadata/statistics from the dataset used during training. When `--policy` is enabled you must pass the policy type, checkpoint path, and training dataset path/repo id on the command line.
+
+Copy-paste examples for the current local checkpoints:
 
 ```bash
-robotserver --policy
+# ACT
+robotserver --show-cameras --policy --gamepad \
+  --policy-type act \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/070000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged
+
+# SmolVLA
+robotserver --show-cameras --policy --gamepad \
+  --policy-type smolvla \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/smolvla/11.5.26/base/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged_trim_4s_1s
+```
+
+### ACT
+
+ACT checkpoints trained on this repo's wrist camera normally expect `observation.images.wrist1`. Use `--policy-type act`; this keeps the camera name unchanged.
+
+```bash
+robotserver --show-cameras --policy --gamepad \
+  --policy-type act \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/070000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged
+```
+
+### SmolVLA
+
+Use `--policy-type smolvla`; the server applies the `wrist1 -> camera1` camera rename automatically for the wrist-only SmolVLA checkpoints used here. LeRobot/SmolVLA then pads missing camera slots according to the checkpoint config.
+
+```bash
+robotserver --show-cameras --policy --gamepad \
+  --policy-type smolvla \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/smolvla/11.5.26/base/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged_trim_4s_1s
+```
+
+The task sentence is defined in `src/piper_teleop/config.py` as `TelegripConfig.task`. For language-conditioned policies such as SmolVLA, keep it exactly aligned with the task string used during dataset recording/training.
+
+### Debugging Policy Inputs
+
+To print camera/state/action diagnostics:
+
+```bash
+POLICY_DEBUG=1 robotserver --show-cameras --policy --gamepad \
+  --policy-type smolvla \
+  --policy-path /path/to/pretrained_model \
+  --policy-repo-id /path/to/training_dataset
+```
+
+To test whether a policy is using the wrist image, blank the wrist camera at inference time:
+
+```bash
+POLICY_BLANK_WRIST=1 POLICY_DEBUG=1 robotserver --show-cameras --policy --gamepad \
+  --policy-type smolvla \
+  --policy-path /path/to/pretrained_model \
+  --policy-repo-id /path/to/training_dataset
+```
+
+Do not leave `POLICY_BLANK_WRIST=1` set for normal deployment.
 
 Training environment note (current known-good setup for this repo):
 
 ```bash
-conda activate piper_new_backup
+conda activate piper_new
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 ```
 
 For video datasets, prefer `--dataset.video_backend=pyav` during `lerobot-train`.
-```
 
 ---
 

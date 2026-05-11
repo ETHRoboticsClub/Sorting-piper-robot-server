@@ -18,12 +18,26 @@ from piper_teleop.robot_server.control_loop import ControlLoop
 
 logger = logging.getLogger(__name__)
 
+_LOG_FMT = "%(asctime)s - %(message)s"
+_LOG_DATEFMT = "%H:%M:%S"
+
+
+def _configure_logging(config: TelegripConfig) -> None:
+    """Apply logging in this process (required for child processes: they do not inherit CLI setup)."""
+    logging.basicConfig(
+        level=getattr(logging, config.log_level.upper()),
+        format=_LOG_FMT,
+        datefmt=_LOG_DATEFMT,
+        force=True,
+    )
+
 
 def _camera_process_wrapper(
     config: TelegripConfig,
     shared_data: SharedCameraData,
 ) -> None:
     """Wrapper to run camera streamer in a separate process with asyncio"""
+    _configure_logging(config)
 
     async def run_camera():
         camera_streamer = CameraStreamer(
@@ -41,6 +55,7 @@ def _camera_process_wrapper(
 
 def _control_process_wrapper(config: TelegripConfig, shared_data: SharedCameraData) -> None:
     """Wrapper to run control process in a separate process with asyncio"""
+    _configure_logging(config)
     asyncio.run(
         _run_control_process(
             config=config,
@@ -88,6 +103,32 @@ def main():
     parser.add_argument("--leader", action="store_true", help="Enable Leader-Follower setup")
     parser.add_argument("--policy", action="store_true", help="Enable policy control")
     parser.add_argument(
+        "--policy-path",
+        type=str,
+        default=None,
+        help="Path or Hugging Face repo id for the policy checkpoint to deploy.",
+    )
+    parser.add_argument(
+        "--policy-repo-id",
+        type=str,
+        default=None,
+        help="LeRobot dataset root/repo id used for the deployed policy metadata and stats.",
+    )
+    parser.add_argument(
+        "--policy-type",
+        type=str,
+        default=None,
+        choices=["act", "smolvla"],
+        help="Policy family; controls camera feature renaming for deployment.",
+    )
+    parser.add_argument(
+        "--policy-device",
+        type=str,
+        default=None,
+        choices=["auto", "cuda", "cpu"],
+        help="Policy inference device (default: config policy_device, usually cuda).",
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warning", "error", "critical"],
@@ -105,9 +146,8 @@ def main():
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()), format="%(asctime)s - %(message)s", datefmt="%H:%M:%S"
-    )
+    config.log_level = args.log_level
+    _configure_logging(config)
 
     config.enable_robot = not args.no_robot
     config.enable_visualization = args.vis
@@ -121,6 +161,18 @@ def main():
     config.gamepad_rotation_world_frame = args.ee_world
     config.use_leader = args.leader
     config.use_policy = args.policy
+    if args.policy_path is not None:
+        config.policy_path = args.policy_path
+    if args.policy_repo_id is not None:
+        config.policy_repo_id = args.policy_repo_id
+    if args.policy_type is not None:
+        config.policy_type = args.policy_type
+    if config.policy_type == "smolvla":
+        config.policy_rename_map = {"observation.images.wrist1": "observation.images.camera1"}
+    elif config.policy_type == "act":
+        config.policy_rename_map = {}
+    if args.policy_device is not None:
+        config.policy_device = args.policy_device
     config.show_camera_feeds = args.show_cameras
     config.root = config.root / f'{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
 
@@ -128,8 +180,14 @@ def main():
         config.camera_configs = []
 
     if config.use_policy:
+        assert args.policy_path is not None, "--policy requires --policy-path"
+        assert args.policy_repo_id is not None, "--policy requires --policy-repo-id"
+        assert args.policy_type is not None, "--policy requires --policy-type act|smolvla"
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
-        assert not args.record, "Recording cannot be used when policy control is enabled"
+        if args.record:
+            assert args.gamepad, (
+                "Recording with --policy requires --gamepad: use Share to toggle policy vs manual teleop"
+            )
         assert not args.resume, "Resume recording cannot be used when policy control is enabled"
         assert not args.leader, "Leader control cannot be used when policy control is enabled"
 
@@ -144,7 +202,8 @@ def main():
         assert num_recording_cams > 0, "There must be at least one camera in recording or hybrid mode"
         assert Version(version("lerobot")) >= Version("0.4.0"), f"lerobot >= 0.4.0 required"
 
-    shared_data = SharedCameraData(configs=config.camera_configs)
+    mp_ctx = mp.get_context("spawn") if config.use_policy and config.policy_device != "cpu" else mp.get_context()
+    shared_data = SharedCameraData(configs=config.camera_configs, ctx=mp_ctx)
 
     logger.info("Initializing server components...")
     try:
@@ -154,7 +213,7 @@ def main():
         logger.info(f"Controller participant: {config.controllers_processing_participant}")
 
         # run camera task as process
-        camera_process = mp.Process(
+        camera_process = mp_ctx.Process(
             target=_camera_process_wrapper,
             args=(
                 config,
@@ -164,7 +223,7 @@ def main():
         camera_process.start()
 
         # run control loop as process
-        control_process = mp.Process(
+        control_process = mp_ctx.Process(
             target=_control_process_wrapper,
             args=(
                 config,

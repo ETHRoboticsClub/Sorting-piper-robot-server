@@ -3,7 +3,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from pynput import keyboard
-from tactile_teleop_sdk.inputs.base import ArmGoal
+
+from .arm_goal import ArmGoal
 
 
 @dataclass

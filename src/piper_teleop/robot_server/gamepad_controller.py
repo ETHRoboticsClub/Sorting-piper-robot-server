@@ -11,8 +11,8 @@ import os
 
 import numpy as np
 import pygame
-from tactile_teleop_sdk.inputs.base import ArmGoal
 
+from piper_teleop.robot_server.arm_goal import ArmGoal
 from piper_teleop.robot_server.core.geometry import (
     apply_delta_world_frame,
     apply_delta_world_trans_ee_rot,
@@ -29,6 +29,9 @@ _BTN_SQUARE = 2
 _BTN_TRIANGLE = 3
 _BTN_L1 = 4
 _BTN_R1 = 5
+# PS4 DualShock via SDL/pygame: Share (left of touchpad) is typically 8; Options is 9.
+_BTN_SHARE = 8
+_BTN_OPTIONS = 9
 
 
 class GamepadController:
@@ -42,6 +45,8 @@ class GamepadController:
       (``apply_delta_world_trans_ee_rot`` vs ``apply_delta_world_frame``).
     - Cross = gripper fully closed; Circle = fully open; Square = reset pose.
     - Triangle = deposit pose loaded from the configured deposit pose file.
+    - With ``robotserver --policy --gamepad``: arm starts in **gamepad** mode; first **Share** enables policy; Share again turns it off.
+      Very slow policies (e.g. diffusion) block ``predict``; press/hold Share briefly so input is seen between calls.
     """
 
     def __init__(
@@ -65,6 +70,10 @@ class GamepadController:
         self._origin_transform: np.ndarray | None = None
         self._gripper_gap_m: float = 0.0
         self._last_hat_y: int = 0
+
+        # Policy + gamepad: Share toggles ML policy. Start in manual mode until first Share.
+        self._policy_engaged: bool = False
+        self._last_share_pressed: bool = False
 
         self._initialized = False
         self.joystick: pygame.joystick.Joystick | None = None
@@ -97,27 +106,21 @@ class GamepadController:
     def gripper_gap_m(self) -> float:
         return float(np.clip(self._gripper_gap_m, 0.0, GRIPPER_OPEN_M))
 
-    def has_manual_override(self) -> bool:
+    def policy_engaged(self) -> bool:
+        """True when ML policy should run; False when gamepad drives the arm (policy+gamepad mode)."""
+        return self._policy_engaged
+
+    def update_policy_toggle(self) -> None:
+        """Edge-detect PS4 Share: toggle policy on/off. Call once per control loop tick."""
         self._pump()
-        if self.joystick is None:
-            return False
-
-        if any(
-            abs(v) > 1e-6
-            for v in (
-                self._stick_axis(0),
-                self._stick_axis(1),
-                self._stick_axis(3),
-                self._stick_axis(4),
-                self._trigger_vertical_m(),
+        share = self._button(_BTN_SHARE)
+        if share and not self._last_share_pressed:
+            self._policy_engaged = not self._policy_engaged
+            logger.info(
+                "Policy %s (Share toggles; gamepad moves arm when policy is off)",
+                "RUNNING" if self._policy_engaged else "OFF — gamepad control",
             )
-        ):
-            return True
-
-        return any(
-            self._button(index)
-            for index in (_BTN_CROSS, _BTN_CIRCLE, _BTN_SQUARE, _BTN_TRIANGLE, _BTN_L1, _BTN_R1)
-        )
+        self._last_share_pressed = share
 
     def _stick_axis(self, index: int) -> float:
         if index < 0 or self.joystick is None or index >= self.joystick.get_numaxes():
@@ -202,6 +205,7 @@ class GamepadController:
         self,
         current_left_target_transform: np.ndarray,
         deposit_transform: np.ndarray | None = None,
+        secondary_deposit_transform: np.ndarray | None = None,
     ) -> ArmGoal:
         self._pump()
         if self.joystick is None:
@@ -229,6 +233,17 @@ class GamepadController:
         if self._button(_BTN_TRIANGLE):
             if deposit_transform is not None and self._target_transform is not None and self._origin_transform is not None:
                 self._target_transform = deposit_transform.copy()
+                arm_goal = ArmGoal(arm="left", gripper_closed=(self.gripper_gap_m <= 1e-6))
+                arm_goal.relative_transform = np.linalg.inv(self._origin_transform) @ self._target_transform
+                return arm_goal
+
+        if self._button(_BTN_OPTIONS):
+            if (
+                secondary_deposit_transform is not None
+                and self._target_transform is not None
+                and self._origin_transform is not None
+            ):
+                self._target_transform = secondary_deposit_transform.copy()
                 arm_goal = ArmGoal(arm="left", gripper_closed=(self.gripper_gap_m <= 1e-6))
                 arm_goal.relative_transform = np.linalg.inv(self._origin_transform) @ self._target_transform
                 return arm_goal

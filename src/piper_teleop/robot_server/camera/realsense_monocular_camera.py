@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import cv2
 import numpy as np
@@ -9,6 +10,23 @@ from piper_teleop.robot_server.camera.monocular_camera import MonocularCamera
 from piper_teleop.robot_server.camera.realsense_device import resolve_realsense_device
 
 
+def _apply_color_auto_exposure(profile: rs.pipeline_profile, enabled: bool, logger: logging.Logger) -> None:
+    device = profile.get_device()
+    color_sensor = None
+    for sensor in device.query_sensors():
+        if sensor.is_color_sensor():
+            color_sensor = sensor
+            break
+    if color_sensor is None:
+        logger.warning('realsense: no color sensor found; skipping auto exposure')
+        return
+    if not color_sensor.supports(rs.option.enable_auto_exposure):
+        logger.warning("realsense: color sensor does not support enable_auto_exposure")
+        return
+    color_sensor.set_option(rs.option.enable_auto_exposure, 1.0 if enabled else 0.0)
+    logger.info("realsense: color auto exposure set to %s", "on" if enabled else "off")
+
+
 class RealSenseMonocularCamera(MonocularCamera):
     """Monocular camera backed by the Intel RealSense SDK instead of Video4Linux indices."""
 
@@ -17,6 +35,7 @@ class RealSenseMonocularCamera(MonocularCamera):
         self.pipeline = None
         self.pipeline_profile = None
         self.resolved_serial_number: str | None = None
+        self._realsense_auto_exposure: bool | None = config.realsense_auto_exposure
 
     def is_connected(self) -> bool:
         return self.pipeline is not None
@@ -41,6 +60,8 @@ class RealSenseMonocularCamera(MonocularCamera):
         self.pipeline_profile = pipeline.start(pipeline_config)
         self.pipeline = pipeline
         self.resolved_serial_number = device.serial_number
+        if self._realsense_auto_exposure is not None:
+            _apply_color_auto_exposure(self.pipeline_profile, self._realsense_auto_exposure, self.logger)
         self.logger.info(
             'realsense camera "%s" initialised with serial %s using %sx%s@%s %s',
             self.name,

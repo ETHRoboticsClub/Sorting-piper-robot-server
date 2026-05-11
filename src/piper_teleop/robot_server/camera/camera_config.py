@@ -83,6 +83,7 @@ class CameraConfig:
         cam_index: int = DEFAULT_CAMERA_CAM_INDEX,
         edge_crop: int = DEFAULT_CAMERA_EDGE_CROP,
         serial_number: str | None = None,
+        realsense_auto_exposure: bool | None = None,
     ):
         self.name = name
         self.type = type
@@ -97,6 +98,8 @@ class CameraConfig:
         self.cam_index = cam_index
         self.edge_crop = edge_crop
         self.serial_number = serial_number
+        # RealSense only: if set, applied to the color sensor after pipeline.start (None = leave SDK default).
+        self.realsense_auto_exposure = realsense_auto_exposure
 
     def __str__(self):
         return (
@@ -120,7 +123,22 @@ class CameraConfig:
             "cam_index": self.cam_index,
             "edge_crop": self.edge_crop,
             "serial_number": self.serial_number,
+            "realsense_auto_exposure": self.realsense_auto_exposure,
         }
+
+
+def _optional_bool_from_config(value) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        s = value.lower().strip()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off"):
+            return False
+    return None
 
 
 def from_config(config: dict[str, str]) -> list[CameraConfig]:
@@ -144,6 +162,11 @@ def from_config(config: dict[str, str]) -> list[CameraConfig]:
         cam_index = int(value["cam_index"]) if "cam_index" in value else DEFAULT_CAMERA_CAM_INDEX
         edge_crop = int(value["edge_crop"]) if "edge_crop" in value else DEFAULT_CAMERA_EDGE_CROP
         serial_number = str(value["serial_number"]) if "serial_number" in value else None
+        realsense_auto_exposure = (
+            _optional_bool_from_config(value["realsense_auto_exposure"])
+            if "realsense_auto_exposure" in value
+            else None
+        )
         configs.append(
             CameraConfig(
                 name=key,
@@ -159,6 +182,7 @@ def from_config(config: dict[str, str]) -> list[CameraConfig]:
                 cam_index=cam_index,
                 edge_crop=edge_crop,
                 serial_number=serial_number,
+                realsense_auto_exposure=realsense_auto_exposure,
             )
         )
     return configs

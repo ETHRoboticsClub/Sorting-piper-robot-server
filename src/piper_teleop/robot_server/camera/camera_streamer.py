@@ -1,19 +1,13 @@
 import asyncio
 import logging
-import os
 
 import cv2
 import numpy as np
-from dotenv import load_dotenv
-from tactile_teleop_sdk import TactileAPI
 
 from piper_teleop.robot_server.camera.camera import Camera
 from piper_teleop.robot_server.camera.camera_config import CameraConfig, CameraMode, CameraType
 from piper_teleop.robot_server.camera.camera_factory import create_camera
 from piper_teleop.robot_server.camera.camera_shared_data import SharedCameraData
-
-# Load environment variables from the project root
-load_dotenv()
 
 class CameraStreamer:
 
@@ -24,7 +18,6 @@ class CameraStreamer:
         show_camera_feeds: bool = False,
     ):
         self.logger = logging.getLogger(__name__)
-        self.api = TactileAPI(api_key=os.getenv("TACTILE_API_KEY"))
         self.cameras = []
         self.shared_data = shared_data
         self.tasks = []
@@ -101,11 +94,8 @@ class CameraStreamer:
         self._render_preview_grid()
 
     async def _run_camera(self, camera: Camera):
-        """Run a camera to capture frames and stream them to the Tactile API or save them to shared memory."""
+        """Run a camera to capture frames for preview and/or shared memory recording."""
         camera.init_camera()
-
-        if camera.mode == CameraMode.STREAMING or camera.mode == CameraMode.HYBRID:
-            await self.api.connect_camera_streamer(camera.frame_height, camera.get_cropped_width())
 
         while self.is_running:
             try:
@@ -114,8 +104,6 @@ class CameraStreamer:
                     if left_frame is None or right_frame is None or cropped_left is None or cropped_right is None:
                         continue
                     self._show_frame(camera, (left_frame, right_frame))
-                    if camera.mode == CameraMode.STREAMING or camera.mode == CameraMode.HYBRID:
-                        await self.api.send_stereo_frame(cropped_left, cropped_right)
                     if camera.mode == CameraMode.RECORDING or camera.mode == CameraMode.HYBRID:
                         self.shared_data.copy(camera.name, left_frame)
 
@@ -124,8 +112,6 @@ class CameraStreamer:
                     if frame is None:
                         continue
                     self._show_frame(camera, frame)
-                    if camera.mode == CameraMode.STREAMING or camera.mode == CameraMode.HYBRID:
-                        await self.api.send_single_frame(frame)
                     if camera.mode == CameraMode.RECORDING or camera.mode == CameraMode.HYBRID:
                         self.shared_data.copy(camera.name, frame)
 

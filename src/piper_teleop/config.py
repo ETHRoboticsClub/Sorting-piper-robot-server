@@ -27,13 +27,22 @@ DEFAULT_CONFIG = {
         "vr_to_robot_scale": 1.0,
         "send_interval": 0.05,
         "ground_height": -0.05,
+        "ros_joint_state_publisher": {
+            "topic": "/joint_states",
+            "frame_id": "piper_single",
+            "joint_names": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"],
+        },
     },
     "control": {
         "keyboard": {"enabled": False, "pos_step": 0.01, "angle_step": 5.0, "gripper_step": 10.0},
         "vr": {"enabled": True},
         "pybullet": {"enabled": True},
     },
-    "paths": {"urdf_path": "URDF/Piper/piper_description.urdf", "deposit_pose_file": "data/deposit_pose.yaml"},
+    "paths": {
+        "urdf_path": "URDF/Piper/piper_description.urdf",
+        "deposit_pose_file": "data/deposit_pose_bin_1.yaml",
+        "secondary_deposit_pose_file": "data/deposit_pose_bin_2.yaml",
+    },
     "gripper": {"open_angle": 0.0, "closed_angle": 45.0},
     "ik": {
         "use_reference_poses": False,
@@ -51,6 +60,7 @@ DEFAULT_CONFIG = {
     # RealSense cameras: set backend="realsense" and serial_number after
     # `python scripts/find_realsense_cameras.py`. That binds each logical camera
     # to a device deterministically instead of relying on /dev/video* ordering.
+    # Optional: realsense_auto_exposure: true|false — if omitted, SDK default is kept.
     #
     # VR binocular (stereo) option: use a separate "stereo" entry with type "stereo" (one wide
     # frame split for left/right eye). You can merge this into config.yaml under cameras: —
@@ -166,6 +176,7 @@ KEYFILE = _config_data["ssl"]["keyfile"]
 VR_TO_ROBOT_SCALE = _config_data["robot"]["vr_to_robot_scale"]
 SEND_INTERVAL = _config_data["robot"]["send_interval"]
 GROUND_HEIGHT = _config_data["robot"]["ground_height"]
+ROS_JOINT_STATE_PUBLISHER = _config_data["robot"].get("ros_joint_state_publisher", {})
 
 POS_STEP = _config_data["control"]["keyboard"]["pos_step"]
 ANGLE_STEP = _config_data["control"]["keyboard"]["angle_step"]
@@ -173,6 +184,7 @@ GRIPPER_STEP = _config_data["control"]["keyboard"]["gripper_step"]
 
 URDF_PATH = _config_data["paths"]["urdf_path"]
 DEPOSIT_POSE_FILE = _config_data["paths"]["deposit_pose_file"]
+SECONDARY_DEPOSIT_POSE_FILE = _config_data["paths"].get("secondary_deposit_pose_file")
 
 GRIPPER_OPEN_ANGLE = _config_data["gripper"]["open_angle"]
 GRIPPER_CLOSED_ANGLE = _config_data["gripper"]["closed_angle"]
@@ -250,7 +262,9 @@ class TelegripConfig:
     dof: int = 7
     fps: int = 30
     robot_type: str = "piper"
-    task: str = "pick and place"
+    # Keep this aligned with the task sentence used during policy training.
+    # Pick up the PET bottle from the conveyor with ot without .?
+    task: str = "Pick up the pet bottle in the middle of the scene"
     use_video = False
     convert_images_to_video = False  # Post-processing option when use_video=False. If True, converts the PNG frames to video format after recording completes.
     display_data = False
@@ -270,16 +284,32 @@ class TelegripConfig:
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (
-        "/home/arc_user/Sorting-piper-robot-server/outputs/train/test_single_arm111/checkpoints/000500/pretrained_model"
+        #"/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/smolvla/11.5.26/base/pretrained_model"
+        "/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/070000/pretrained_model"
     )
-    policy_repo_id: str = "/home/arc_user/Sorting-piper-robot-server/data/2026-04-11_10-47-28_video" #Data used for training
+    policy_repo_id: str = "/home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged" #Data used for training
+    policy_type: str = "act"
+    policy_rename_map: Dict[str, str] = field(default_factory=dict)
+    # LeRobot policy inference. Default cuda; use --policy-device cpu on machines without GPU.
+    policy_device: str = "cuda"
     enable_visualization: bool = True
     autoconnect: bool = False
     log_level: str = "warning"
+    ros_joint_state_topic: str = str(ROS_JOINT_STATE_PUBLISHER.get("topic", "/joint_states"))
+    ros_joint_state_frame_id: str = str(ROS_JOINT_STATE_PUBLISHER.get("frame_id", "piper_single"))
+    ros_joint_state_names: list[str] = field(
+        default_factory=lambda: list(
+            ROS_JOINT_STATE_PUBLISHER.get(
+                "joint_names",
+                ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"],
+            )
+        )
+    )
 
     # Paths
     urdf_path: str = URDF_PATH
     deposit_pose_file: str = DEPOSIT_POSE_FILE
+    secondary_deposit_pose_file: str | None = SECONDARY_DEPOSIT_POSE_FILE
 
     # IK settings
     use_reference_poses: bool = USE_REFERENCE_POSES
@@ -335,6 +365,12 @@ class TelegripConfig:
     def get_absolute_deposit_pose_path(self) -> str:
         """Get absolute path to deposit pose file."""
         return str(get_absolute_path(self.deposit_pose_file))
+
+    def get_absolute_secondary_deposit_pose_path(self) -> str | None:
+        """Get absolute path to secondary deposit pose file, if configured."""
+        if not self.secondary_deposit_pose_file:
+            return None
+        return str(get_absolute_path(self.secondary_deposit_pose_file))
 
     def get_absolute_reference_poses_path(self) -> str:
         """Get absolute path to reference poses file."""

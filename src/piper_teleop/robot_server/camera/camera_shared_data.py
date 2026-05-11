@@ -1,4 +1,5 @@
-from multiprocessing import shared_memory, Value
+import multiprocessing as mp
+from multiprocessing import shared_memory
 import numpy as np
 from piper_teleop.robot_server.camera.camera_config import CameraConfig, CameraMode
 
@@ -6,6 +7,7 @@ class SingleCameraSharedData:
     def __init__(self, name: str,
                  frame_shape: tuple[int, int, int],
                  capacity: int = 8,
+                 ctx: mp.context.BaseContext | None = None,
                  ):
 
         assert 2<=capacity<16, "capacity must be between 2 and 16"
@@ -13,6 +15,7 @@ class SingleCameraSharedData:
         self.capacity = capacity
         self.frame_shape = frame_shape
         self.dtype = np.uint8
+        self._shm_owner = True
 
         # Calculate memory requirements
         shape = (capacity,) + frame_shape
@@ -30,9 +33,25 @@ class SingleCameraSharedData:
 
         self.shm = shared_memory.SharedMemory(name=shm_name, create=True, size=total_bytes)
         self.shm.buf[:] = b"\x00" * total_bytes  # optional zeroing
-        self.write_counter = Value("Q", 0, lock=True)
+        mp_ctx = ctx or mp.get_context()
+        self.write_counter = mp_ctx.Value("Q", 0, lock=True)
 
         # Create numpy array view of shared memory
+        self.array = np.ndarray(shape, dtype=self.dtype, buffer=self.shm.buf)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_shm_name"] = self.shm.name
+        state.pop("shm", None)
+        state.pop("array", None)
+        state["_shm_owner"] = False
+        return state
+
+    def __setstate__(self, state):
+        shm_name = state.pop("_shm_name")
+        self.__dict__.update(state)
+        self.shm = shared_memory.SharedMemory(name=shm_name, create=False)
+        shape = (self.capacity,) + self.frame_shape
         self.array = np.ndarray(shape, dtype=self.dtype, buffer=self.shm.buf)
 
     def write(self, frame: np.ndarray) -> int:
@@ -60,16 +79,22 @@ class SingleCameraSharedData:
     def __del__(self):
         try:
             self.shm.close()
-            try:
-                self.shm.unlink()
-            except FileNotFoundError:
-                pass
+            if getattr(self, "_shm_owner", False):
+                try:
+                    self.shm.unlink()
+                except FileNotFoundError:
+                    pass
         except Exception:
             pass
 
 
 class SharedCameraData:
-    def __init__(self, configs: list[CameraConfig], capacity: int = 8):
+    def __init__(
+        self,
+        configs: list[CameraConfig],
+        capacity: int = 8,
+        ctx: mp.context.BaseContext | None = None,
+    ):
         self.cameras: dict[str, SingleCameraSharedData] = {}
         for cfg in configs:
             if cfg.mode not in (CameraMode.RECORDING, CameraMode.HYBRID):
@@ -79,6 +104,7 @@ class SharedCameraData:
                 name=cfg.name,
                 frame_shape=frame_shape,
                 capacity=capacity,
+                ctx=ctx,
             )
     def read(self, name: str) -> np.ndarray:
         return self.cameras[name].read()

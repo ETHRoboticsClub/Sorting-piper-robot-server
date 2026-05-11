@@ -11,20 +11,20 @@
 
   <!--
     Stepped floor:
-      - Back side   (x < -0.03): top at z = -0.20
+      - Back side   (x < -0.03): top at z = -0.15
       - Under base  (|x| <= 0.03): top at z = 0.00
-      - Front side  (x > +0.03): top at z = -0.10
+      - Front side  (x > +0.03): top at z = -0.05
     URDF has finite primitives, so we approximate +/- infinity with large extents.
   -->
   <link name="floor_back">
     <collision>
-      <origin xyz="-10.015 0 -0.210" rpy="0 0 0"/>
+      <origin xyz="-10.015 0 -0.160" rpy="0 0 0"/>
       <geometry>
         <box size="19.97 1.00 0.020"/>
       </geometry>
     </collision>
     <visual>
-      <origin xyz="-10.015 0 -0.210" rpy="0 0 0"/>
+      <origin xyz="-10.015 0 -0.160" rpy="0 0 0"/>
       <geometry>
         <box size="19.97 1.00 0.020"/>
       </geometry>
@@ -41,13 +41,13 @@
 
   <link name="floor_front">
     <collision>
-      <origin xyz="10.015 0 -0.110" rpy="0 0 0"/>
+      <origin xyz="10.015 0 -0.060" rpy="0 0 0"/>
       <geometry>
         <box size="19.97 0.60 0.020"/>
       </geometry>
     </collision>
     <visual>
-      <origin xyz="10.015 0 -0.110" rpy="0 0 0"/>
+      <origin xyz="10.015 0 -0.060" rpy="0 0 0"/>
       <geometry>
         <box size="19.97 0.60 0.020"/>
       </geometry>
@@ -82,54 +82,6 @@
   <joint name="world_to_floor_under_base" type="fixed">
     <parent link="world"/>
     <child link="floor_under_base"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint>
-
-  <!-- Left wall at y = +0.55, spanning x=[-0.30, +1.00], z=[-0.10, +0.55] -->
-  <link name="left_wall">
-    <collision>
-      <origin xyz="0.35 0.55 0.225" rpy="0 0 0"/>
-      <geometry>
-        <box size="1.30 0.02 0.65"/>
-      </geometry>
-    </collision>
-    <visual>
-      <origin xyz="0.35 0.55 0.225" rpy="0 0 0"/>
-      <geometry>
-        <box size="1.30 0.02 0.65"/>
-      </geometry>
-      <material name="wall_blue">
-        <color rgba="0.2 0.4 0.8 0.35"/>
-      </material>
-    </visual>
-  </link>
-  <joint name="world_to_left_wall" type="fixed">
-    <parent link="world"/>
-    <child link="left_wall"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </joint>
-
-  <!-- Right wall at y = -0.55, spanning x=[-0.30, +1.00], z=[-0.10, +0.55] -->
-  <link name="right_wall">
-    <collision>
-      <origin xyz="0.35 -0.55 0.225" rpy="0 0 0"/>
-      <geometry>
-        <box size="1.30 0.02 0.65"/>
-      </geometry>
-    </collision>
-    <visual>
-      <origin xyz="0.35 -0.55 0.225" rpy="0 0 0"/>
-      <geometry>
-        <box size="1.30 0.02 0.65"/>
-      </geometry>
-      <material name="wall_blue">
-        <color rgba="0.2 0.4 0.8 0.35"/>
-      </material>
-    </visual>
-  </link>
-  <joint name="world_to_right_wall" type="fixed">
-    <parent link="world"/>
-    <child link="right_wall"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 

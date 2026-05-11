@@ -1,21 +1,17 @@
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import dotenv
 import numpy as np
+import torch
 import yaml
-from lerobot.utils.robot_utils import precise_sleep
-from tactile_teleop_sdk.inputs.base import ArmGoal
-from tactile_teleop_sdk import TactileAPI
 
 from piper_teleop.config import TelegripConfig
+from piper_teleop.robot_server.arm_goal import ArmGoal
 from piper_teleop.robot_server.camera import SharedCameraData
 from piper_teleop.robot_server.keyboard_controller import KeyboardController
-from piper_teleop.robot_server.lerobot_policy import LerobotPolicy
 from piper_teleop.utils import get_absolute_path
 
 from .core.geometry import xyzrpy2transform
@@ -23,12 +19,17 @@ from .core.robot_interface import RobotInterface, arm_angles_to_action_dict
 from .recorder import Recorder
 from .robot_leader import PiperLeader
 
-dotenv.load_dotenv()
-
 logger = logging.getLogger(__name__)
 
 # Prismatic finger command when gripper is "open" in toggle mode (matches gamepad max gap).
 GRIPPER_FINGER_OPEN_M = 0.07
+
+
+def precise_sleep(duration_s: float) -> None:
+    """Best-effort sleep helper without requiring lerobot."""
+    if duration_s <= 0.0:
+        return
+    time.sleep(duration_s)
 
 
 @dataclass
@@ -42,6 +43,7 @@ class ArmState:
     )
     target_transform: np.ndarray | None = None
     deposit_transform: np.ndarray | None = None
+    secondary_deposit_transform: np.ndarray | None = None
     gripper_closed: bool = True
     # Gamepad: incremental opening in metres; None = use gripper_closed / GRIPPER_FINGER_OPEN_M
     gripper_gap_m: float | None = None
@@ -54,9 +56,10 @@ class ControlLoop:
         self,
         config: TelegripConfig,
         shared_data: SharedCameraData,  #
+        robot_interface: RobotInterface | None = None,
     ):
         self.config = config
-        self.robot_interface = RobotInterface(config)
+        self.robot_interface = robot_interface or RobotInterface(config)
         self.robot_enabled = config.enable_robot
         self.use_keyboard = config.enable_keyboard
         self.use_gamepad = config.enable_gamepad
@@ -80,12 +83,25 @@ class ControlLoop:
                 rotation_world_frame=config.gamepad_rotation_world_frame,
             )
         self.visualize = config.enable_visualization
-        self.api = TactileAPI(api_key=os.getenv("TACTILE_API_KEY"))
-
         if self.use_policy:
+            from piper_teleop.robot_server.lerobot_policy import LerobotPolicy
+
             policy_path = config.policy_path
             repo_id = config.policy_repo_id
-            self.policy = LerobotPolicy(policy_path, repo_id)
+            pd = getattr(config, "policy_device", "cuda") or "cuda"
+            if pd == "auto":
+                pd = "cuda" if torch.cuda.is_available() else "cpu"
+            elif pd == "cuda" and not torch.cuda.is_available():
+                logger.warning("policy_device=cuda but CUDA not available; using cpu")
+                pd = "cpu"
+            logger.info("LeRobot policy inference device: %s", pd)
+            self.policy = LerobotPolicy(
+                policy_path,
+                repo_id,
+                device=pd,
+                rename_map=getattr(config, "policy_rename_map", None),
+                task=getattr(config, "task", ""),
+            )
             self._policy_override_active_last = False
 
         self.shared_data = shared_data
@@ -120,6 +136,7 @@ class ControlLoop:
         elif command == "discard":
             self.recorder.request_discard_episode()
 
+
     def _record_side_for_single_arm(self) -> str:
         """Choose which logical side to use for single-arm datasets."""
         cfg = self.config.single_arm_record_side
@@ -129,9 +146,6 @@ class ControlLoop:
 
     def _policy_action_side(self) -> str:
         return self._record_side_for_single_arm()
-
-    def _policy_gamepad_override_active(self) -> bool:
-        return self.use_policy and self.use_gamepad and self.gamepad_controller.has_manual_override()
 
     def _policy_action_dicts_to_joint_angles(self, dict_left: dict, dict_right: dict) -> np.ndarray:
         joint_angles = np.array(self.robot_interface.arm_angles, copy=True)
@@ -231,38 +245,41 @@ class ControlLoop:
             f"Overhead: {overhead_time*1000:.1f}ms, Total: {total_time*1000:.1f}ms"
         )
 
-    def _load_deposit_pose_file(self, arm: ArmState) -> None:
-        pose_path = get_absolute_path(self.config.deposit_pose_file)
+    def _load_deposit_pose_file(self, arm: ArmState, pose_file: str | None, target_attr: str, label: str) -> None:
+        if not pose_file:
+            return
+        pose_path = get_absolute_path(pose_file)
         if not pose_path.exists():
-            logger.warning("Deposit pose file not found: %s", pose_path)
+            logger.warning("%s pose file not found: %s", label, pose_path)
             return
 
         try:
             with open(pose_path, "r") as handle:
                 pose_data = yaml.safe_load(handle) or {}
         except Exception as exc:
-            logger.error("Failed to load deposit pose file %s: %s", pose_path, exc)
+            logger.error("Failed to load %s pose file %s: %s", label, pose_path, exc)
             return
 
         side = self._record_side_for_single_arm()
         arm_payload = pose_data.get(side, pose_data.get("arm", {}))
         transform_rows = arm_payload.get("transform")
         if transform_rows is None:
-            logger.warning("Deposit pose file %s has no transform for %s/arm", pose_path, side)
+            logger.warning("%s pose file %s has no transform for %s/arm", label, pose_path, side)
             return
 
         transform = np.asarray(transform_rows, dtype=float)
         if transform.shape != (4, 4):
             logger.error(
-                "Deposit pose for %s arm in %s has invalid shape %s",
+                "%s pose for %s arm in %s has invalid shape %s",
+                label,
                 side,
                 pose_path,
                 transform.shape,
             )
             return
 
-        arm.deposit_transform = transform
-        logger.info("Loaded %s arm deposit pose from %s", side, pose_path)
+        setattr(arm, target_attr, transform)
+        logger.info("Loaded %s arm %s pose from %s", side, label.lower(), pose_path)
 
     async def run(self):
         """Control loop for the teleoperation system."""
@@ -271,13 +288,13 @@ class ControlLoop:
         self.robot_interface.setup_kinematics()
         if self.use_keyboard or self.use_gamepad or self.use_policy or self.use_leader:
             logger.info(
-                "Local/policy control (%s): skipping Tactile VR connection (no LiveKit room required).",
+                "Local/policy control mode: %s",
                 "leader"
                 if self.use_leader
                 else ("policy" if self.use_policy else ("keyboard" if self.use_keyboard else "gamepad")),
             )
         else:
-            await self.api.connect_vr_controller()
+            logger.warning("No control source selected; node will hold the current target pose.")
         if self.robot_enabled:
             try:
                 self.robot_interface.connect()
@@ -286,7 +303,13 @@ class ControlLoop:
                 return
             finally:
                 self.robot_enabled = self.robot_interface.is_connected
-        self._load_deposit_pose_file(arm)
+        self._load_deposit_pose_file(arm, self.config.deposit_pose_file, "deposit_transform", "Primary deposit")
+        self._load_deposit_pose_file(
+            arm,
+            self.config.secondary_deposit_pose_file,
+            "secondary_deposit_transform",
+            "Secondary deposit",
+        )
         if self.robot_enabled:
             self.robot_interface.return_to_initial_position()
         if self.use_leader:
@@ -300,16 +323,26 @@ class ControlLoop:
 
             commands_time = time.perf_counter() - commands_start
 
-            override_active = self._policy_gamepad_override_active()
+            # Policy + gamepad: Share toggles policy on/off; when off, gamepad drives the arm (no stick takeover).
+            if self.use_policy and self.use_gamepad:
+                self.gamepad_controller.update_policy_toggle()
+                override_active = not self.gamepad_controller.policy_engaged()
+            else:
+                override_active = False
+
             if self.use_policy:
-                if override_active and not self._policy_override_active_last:
+                if override_active != self._policy_override_active_last:
                     self.policy.reset()
                 self._policy_override_active_last = override_active
 
             if self.use_gamepad and not self.use_policy:
-                arm_goal = self.gamepad_controller.get_goal(arm.target_transform, arm.deposit_transform)
+                arm_goal = self.gamepad_controller.get_goal(
+                    arm.target_transform, arm.deposit_transform, arm.secondary_deposit_transform
+                )
             elif override_active:
-                arm_goal = self.gamepad_controller.get_goal(arm.target_transform, arm.deposit_transform)
+                arm_goal = self.gamepad_controller.get_goal(
+                    arm.target_transform, arm.deposit_transform, arm.secondary_deposit_transform
+                )
             elif self.use_keyboard:
                 keyboard_side = self._record_side_for_single_arm()
                 self.keyboard_controller.single_follower_side = keyboard_side
@@ -317,7 +350,7 @@ class ControlLoop:
             elif self.use_policy or self.use_leader:
                 arm_goal = ArmGoal(arm=self._record_side_for_single_arm())
             else:
-                arm_goal = await self.api.get_controller_goal(self._record_side_for_single_arm())
+                arm_goal = ArmGoal(arm=self._record_side_for_single_arm())
 
             arm = self.update_arm_state(arm_goal, arm)
 
@@ -382,7 +415,18 @@ class ControlLoop:
             sleep_time = time.perf_counter() - sleep_start
 
             dt_s = time.perf_counter() - iteration_start
-            print(f"\rFPS: {1/dt_s}", end="", flush=True)
+            if self.config.record:
+                rec_state = self.recorder.state.name
+                extra = ""
+                if self.use_policy and self.use_gamepad:
+                    pol = "ON" if self.gamepad_controller.policy_engaged() else "OFF"
+                    extra = f" | POLICY: {pol}"
+                print(f"\rFPS: {1/dt_s:.1f} | REC: {rec_state}{extra}", end="", flush=True)
+            elif self.use_policy and self.use_gamepad:
+                pol = "ON" if self.gamepad_controller.policy_engaged() else "OFF"
+                print(f"\rFPS: {1/dt_s:.1f} | POLICY: {pol}", end="", flush=True)
+            else:
+                print(f"\rFPS: {1/dt_s:.1f}", end="", flush=True)
             precise_sleep(1 / self.config.fps - dt_s)
 
             total_time = time.perf_counter() - iteration_start
@@ -404,9 +448,7 @@ class ControlLoop:
             self.keyboard_controller.stop()
         if self.use_gamepad:
             self.gamepad_controller.stop()
-        if not self.use_keyboard and not self.use_gamepad and not self.use_policy and not self.use_leader:
-            await self.api.disconnect_vr_controller()
         if self.robot_enabled:
-            self.robot_interface.disconnect()
+            self.robot_interface.disconnect(return_to_initial=False)
         if self.use_leader:
             self.robot_leader.disconnect()

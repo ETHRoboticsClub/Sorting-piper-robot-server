@@ -16,7 +16,7 @@ robot:
     enabled: true
   vr_to_robot_scale: 1.0
   send_interval: 0.05
-  ground_height: -0.30
+  ground_height: -0.15
 
 control:
   keyboard:
@@ -31,7 +31,8 @@ control:
 
 paths:
   urdf_path: URDF/Piper/piper_description.urdf
-  deposit_pose_file: data/deposit_pose.yaml
+  deposit_pose_file: data/deposit_pose_bin_1.yaml
+  secondary_deposit_pose_file: data/deposit_pose_bin_2.yaml
 
 gripper:
   open_angle: 0.0
@@ -50,6 +51,8 @@ cameras:
     type: monocular
     backend: realsense
     serial_number: 234322305361
+    realsense_auto_exposure: true
+    # serial_number 126122270287 #D405 
     mode: recording
     fps: "30"
     frame_width: "640"
@@ -62,6 +65,7 @@ cameras:
     type: monocular
     backend: realsense
     serial_number: 213522251124
+    realsense_auto_exposure: true
     # serial_number: "030422250224"
     mode: recording
     fps: "30"

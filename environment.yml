@@ -1,0 +1,26 @@
+# Conda environment matching the Piper teleop stack (Pinocchio on conda-forge, rest via pip).
+#
+# Create (from this repo root):
+#   conda env create -f environment.yml
+#
+# Activate:
+#   conda activate piper_new
+#
+# Refresh after editing this file:
+#   conda env update -f environment.yml --prune
+#
+# Exact copy of an env from another computer: on the source machine run
+#   bash scripts/export_conda_env_for_copy.sh piper_new my_export.yml
+# then copy my_export.yml to the new machine and: conda env create -f my_export.yml
+#
+name: piper_new
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10.*
+  - pinocchio=3.2.0
+  - pip
+  - pip:
+      # Editable install pulls dependencies from pyproject.toml (opencv, lerobot, piper_sdk, …).
+      - "--editable ."
