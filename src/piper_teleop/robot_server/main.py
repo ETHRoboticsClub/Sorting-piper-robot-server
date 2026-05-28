@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import logging
 import multiprocessing as mp
+import re
 from importlib.metadata import version
 
 from packaging.version import Version
@@ -100,6 +101,27 @@ def main():
     parser.add_argument("--record", action="store_true", help="Enable recording")
     parser.add_argument("--resume", action="store_true", help="Resume recording")
     parser.add_argument("--repo-id", type=str, default="default-piper", help="repo_id for dataset storage")
+    parser.add_argument(
+        "--task",
+        type=str,
+        default=None,
+        choices=["pet", "aluminium", "custom"],
+        help=(
+            "Task label written into the recorded dataset (and used by language-conditioned policies). "
+            "pet -> 'Pick up PET bottle', aluminium -> 'Pick up aluminium can', "
+            "custom -> prompt for a free-form sentence. If omitted, uses config.task."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Operator name appended to the recording folder (e.g. --name sebastien -> "
+            "data/raw/YYYY-MM-DD_HH-MM-SS_sebastien/). Used only with --record to keep track "
+            "of who recorded which session."
+        ),
+    )
     parser.add_argument("--leader", action="store_true", help="Enable Leader-Follower setup")
     parser.add_argument("--policy", action="store_true", help="Enable policy control")
     parser.add_argument(
@@ -154,6 +176,18 @@ def main():
     config.record = args.record
     config.resume = args.resume
     config.repo_id = args.repo_id
+
+    _TASK_PRESETS = {
+        "pet": ("Pick up PET bottle", "Pick up aluminium can"),
+        "aluminium": ("Pick up aluminium can", "Pick up PET bottle"),
+    }
+    if args.task == "custom":
+        custom_task = input("Task description: ").strip()
+        assert custom_task, "--task custom requires a non-empty description"
+        config.task = custom_task
+    elif args.task is not None:
+        config.task, config.task_secondary = _TASK_PRESETS[args.task]
+
     config.enable_keyboard = args.keyboard
     config.enable_gamepad = args.gamepad
     if args.ee_world:
@@ -174,7 +208,15 @@ def main():
     if args.policy_device is not None:
         config.policy_device = args.policy_device
     config.show_camera_feeds = args.show_cameras
-    config.root = config.root / f'{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}'
+    session_dirname = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if args.name:
+        safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", args.name.strip()).strip("_")
+        assert safe_name, "--name must contain at least one alphanumeric character"
+        session_dirname = f"{session_dirname}_{safe_name}"
+    if config.record:
+        config.root = config.root / "raw" / session_dirname
+    else:
+        config.root = config.root / session_dirname
 
     if args.no_cameras:
         config.camera_configs = []
@@ -186,7 +228,7 @@ def main():
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
         if args.record:
             assert args.gamepad, (
-                "Recording with --policy requires --gamepad: use Share to toggle policy vs manual teleop"
+                "Recording with --policy requires --gamepad: use Share/PS to toggle policy vs manual teleop"
             )
         assert not args.resume, "Resume recording cannot be used when policy control is enabled"
         assert not args.leader, "Leader control cannot be used when policy control is enabled"

@@ -81,6 +81,8 @@ class ControlLoop:
                 max_linear_step=config.pos_step,
                 angle_step=config.angle_step,
                 rotation_world_frame=config.gamepad_rotation_world_frame,
+                primary_task=getattr(config, "task", ""),
+                secondary_task=getattr(config, "task_secondary", ""),
             )
         self.visualize = config.enable_visualization
         if self.use_policy:
@@ -103,6 +105,7 @@ class ControlLoop:
                 task=getattr(config, "task", ""),
             )
             self._policy_override_active_last = False
+            self._policy_task_last = None
 
         self.shared_data = shared_data
         if self.config.record:
@@ -323,17 +326,23 @@ class ControlLoop:
 
             commands_time = time.perf_counter() - commands_start
 
-            # Policy + gamepad: Share toggles policy on/off; when off, gamepad drives the arm (no stick takeover).
+            # Policy + gamepad: Share/PS toggle policy on/off and select its task; when off,
+            # gamepad drives the arm (no stick takeover).
             if self.use_policy and self.use_gamepad:
                 self.gamepad_controller.update_policy_toggle()
                 override_active = not self.gamepad_controller.policy_engaged()
+                # Push the selected task onto the live policy (matters for VLA; ignored by ACT).
+                self.policy.task = self.gamepad_controller.selected_task()
             else:
                 override_active = False
 
             if self.use_policy:
-                if override_active != self._policy_override_active_last:
+                task_now = getattr(self.policy, "task", None)
+                # Reset on engage/disengage and when the task switches, so the action queue is rebuilt.
+                if override_active != self._policy_override_active_last or task_now != self._policy_task_last:
                     self.policy.reset()
                 self._policy_override_active_last = override_active
+                self._policy_task_last = task_now
 
             if self.use_gamepad and not self.use_policy:
                 arm_goal = self.gamepad_controller.get_goal(

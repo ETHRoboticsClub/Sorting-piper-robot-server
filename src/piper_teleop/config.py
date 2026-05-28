@@ -80,11 +80,11 @@ DEFAULT_CONFIG = {
     "cameras": {
         "wrist1": {
             "type": "monocular",
-            "mode": "recording", # why hybrid and not recording?
+            "mode": "recording",  # why hybrid and not recording?
             "fps": "30",
             "frame_width": "640",
             "frame_height": "480",
-            "capture_frame_width": "1280", #old 640x 480
+            "capture_frame_width": "1280",  # old 640x 480
             "capture_frame_height": "720",
             "backend": "opencv",
             "capture_api": cv2.CAP_V4L2,
@@ -262,10 +262,14 @@ class TelegripConfig:
     dof: int = 7
     fps: int = 30
     robot_type: str = "piper"
-    # Keep this aligned with the task sentence used during policy training.
-    # Pick up the PET bottle from the conveyor with ot without .?
-    task: str = "Pick up the pet bottle in the middle of the scene"
-    use_video = False
+    # Keep these aligned with the task sentences used during policy training.
+    # For language-conditioned policies (e.g. SmolVLA) the gamepad picks which task
+    # string is sent to the model: Share -> `task`, PS button (center) -> `task_secondary`.
+    # ACT and other non-language policies ignore the task, so either button just deploys.
+    # `task` is also the sentence written into recorded datasets.
+    task: str = "Pick up PET bottle"
+    task_secondary: str = "Pick up aluminium can"
+    use_video = True
     convert_images_to_video = False  # Post-processing option when use_video=False. If True, converts the PNG frames to video format after recording completes.
     display_data = False
     show_camera_feeds: bool = False
@@ -284,10 +288,13 @@ class TelegripConfig:
     use_leader: bool = False
     use_policy: bool = False
     policy_path: str = (
-        #"/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/smolvla/11.5.26/base/pretrained_model"
-        "/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/070000/pretrained_model"
+        # "/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/smolvla/11.5.26/base/pretrained_model"
+        # "/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/070000/pretrained_model"
+        "/home/arc_user/workspaces/Sorting-piper-robot-server/outputs/act_madi_plus_alu_20260519/pretrained_model"
     )
-    policy_repo_id: str = "/home/arc_user/workspaces/Sorting-piper-robot-server/data/02052026_plus_multi_pet_dagger_wrist_only_merged" #Data used for training
+    policy_repo_id: str = (
+        "/home/arc_user/workspaces/Sorting-piper-robot-server/data/merged/madi_merged_alu_good_dataset_2026_05_20_wrist_only"  # Data used for training
+    )
     policy_type: str = "act"
     policy_rename_map: Dict[str, str] = field(default_factory=dict)
     # LeRobot policy inference. Default cuda; use --policy-device cpu on machines without GPU.

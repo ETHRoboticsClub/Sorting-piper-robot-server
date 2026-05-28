@@ -32,6 +32,10 @@ _BTN_R1 = 5
 # PS4 DualShock via SDL/pygame: Share (left of touchpad) is typically 8; Options is 9.
 _BTN_SHARE = 8
 _BTN_OPTIONS = 9
+# PS button: the round logo button between the sticks. With this driver mapping
+# (Share=8, Options=9) it is index 10. Override with GAMEPAD_PS_BUTTON if your
+# controller enumerates differently (run with the gamepad and watch the logs).
+_BTN_PS = int(os.environ.get("GAMEPAD_PS_BUTTON", "10"))
 
 
 class GamepadController:
@@ -45,8 +49,11 @@ class GamepadController:
       (``apply_delta_world_trans_ee_rot`` vs ``apply_delta_world_frame``).
     - Cross = gripper fully closed; Circle = fully open; Square = reset pose.
     - Triangle = deposit pose loaded from the configured deposit pose file.
-    - With ``robotserver --policy --gamepad``: arm starts in **gamepad** mode; first **Share** enables policy; Share again turns it off.
-      Very slow policies (e.g. diffusion) block ``predict``; press/hold Share briefly so input is seen between calls.
+    - With ``robotserver --policy --gamepad``: arm starts in **gamepad** mode. **Share** enables the
+      policy with the *primary* task; **PS** (center button) enables it with the *secondary* task.
+      Pressing the running button again turns the policy off; pressing the other switches task.
+      Non-language policies (e.g. ACT) ignore the task, so either button just deploys.
+      Very slow policies (e.g. diffusion) block ``predict``; press/hold briefly so input is seen between calls.
     """
 
     def __init__(
@@ -56,6 +63,8 @@ class GamepadController:
         deadzone: float = 0.12,
         joystick_index: int = 0,
         rotation_world_frame: bool = False,
+        primary_task: str = "",
+        secondary_task: str = "",
     ):
         self.max_linear_step = max_linear_step
         self._rotation_world_frame = bool(rotation_world_frame)
@@ -71,9 +80,14 @@ class GamepadController:
         self._gripper_gap_m: float = 0.0
         self._last_hat_y: int = 0
 
-        # Policy + gamepad: Share toggles ML policy. Start in manual mode until first Share.
+        # Policy + gamepad: Share/PS toggle the ML policy and pick its task.
+        # Start in manual mode until the first button press.
         self._policy_engaged: bool = False
+        self._primary_task: str = primary_task
+        self._secondary_task: str = secondary_task
+        self._selected_task: str = primary_task
         self._last_share_pressed: bool = False
+        self._last_ps_pressed: bool = False
 
         self._initialized = False
         self.joystick: pygame.joystick.Joystick | None = None
@@ -110,17 +124,40 @@ class GamepadController:
         """True when ML policy should run; False when gamepad drives the arm (policy+gamepad mode)."""
         return self._policy_engaged
 
+    def selected_task(self) -> str:
+        """Task/language string chosen by the last engage button (Share=primary, PS=secondary)."""
+        return self._selected_task
+
     def update_policy_toggle(self) -> None:
-        """Edge-detect PS4 Share: toggle policy on/off. Call once per control loop tick."""
+        """Edge-detect Share/PS: each engages the policy with its task. Call once per loop tick.
+
+        Share selects the primary task, PS (center button) the secondary task. Pressing the
+        button already running turns the policy OFF; pressing the other button switches the
+        task while staying ON. Non-language policies (e.g. ACT) ignore the task, so either
+        button simply deploys the policy.
+        """
         self._pump()
         share = self._button(_BTN_SHARE)
+        ps = self._button(_BTN_PS)
         if share and not self._last_share_pressed:
-            self._policy_engaged = not self._policy_engaged
-            logger.info(
-                "Policy %s (Share toggles; gamepad moves arm when policy is off)",
-                "RUNNING" if self._policy_engaged else "OFF — gamepad control",
-            )
+            self._toggle_for_task(self._primary_task, "Share")
+        if ps and not self._last_ps_pressed:
+            self._toggle_for_task(self._secondary_task, "PS")
         self._last_share_pressed = share
+        self._last_ps_pressed = ps
+
+    def _toggle_for_task(self, task: str, label: str) -> None:
+        if self._policy_engaged and self._selected_task == task:
+            self._policy_engaged = False
+        else:
+            self._policy_engaged = True
+            self._selected_task = task
+        logger.info(
+            "Policy %s via %s%s",
+            "RUNNING" if self._policy_engaged else "OFF — gamepad control",
+            label,
+            f' (task="{task}")' if self._policy_engaged and task else "",
+        )
 
     def _stick_axis(self, index: int) -> float:
         if index < 0 or self.joystick is None or index >= self.joystick.get_numaxes():
