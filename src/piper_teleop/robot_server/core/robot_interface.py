@@ -135,7 +135,13 @@ class RobotInterface:
     def setup_kinematics(self):
         """Setup single-arm kinematics solver."""
         ground_height = self.config.ground_height
-        self.ik_solver = Arm_IK(self.config.urdf_path, ground_height, self.config.collision_space_urdf)
+        # Resolve URDF paths against the project root (not the CWD) so launching
+        # robotserver from any directory still finds the URDF/meshes.
+        self.ik_solver = Arm_IK(
+            self.config.get_absolute_urdf_path(),
+            ground_height,
+            self.config.get_absolute_collision_space_path(),
+        )
         logger.info("Single-arm IK initialized with ground plane at height %.3f", ground_height)
 
     def get_end_effector_transform(self, arm: str) -> np.ndarray:

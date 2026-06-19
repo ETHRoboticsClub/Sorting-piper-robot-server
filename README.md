@@ -35,7 +35,7 @@ robotserver --show-cameras --gamepad --record --task aluminium
 robotserver --show-cameras --gamepad --record --task custom
 ```
 
-Deploy a trained policy. Both **ACT** and **SmolVLA (VLA)** checkpoints are supported via `--policy-type`:
+Deploy a trained policy. **ACT**, **Diffusion Policy**, and **SmolVLA (VLA)** checkpoints are supported via `--policy-type`:
 
 ```bash
 # ACT — current aluminium checkpoint
@@ -45,16 +45,62 @@ robotserver --show-cameras --policy --gamepad --record \
   --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/alu/madi_plus_seb_wrist/pretrained_model \
   --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/madi_plus_aluminium_merged_wrist_only
 
+# ACT — current PET checkpoint
+robotserver --show-cameras --policy --gamepad --record \
+  --task pet \
+  --policy-type act \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/train/2026-06-08_pet_alu_wrist_act/checkpoints/200000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
+
+# Diffusion Policy — current PET checkpoint
+robotserver --show-cameras --policy --gamepad --record \
+  --task pet \
+  --policy-type diffusion \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/PET/dp/200k/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-05-28_PET_complete_v2_wrist
+
 # SmolVLA — language-conditioned, one checkpoint can do both tasks; --task picks which
 robotserver --show-cameras --policy --gamepad --record \
   --task pet \
   --policy-type smolvla \
-  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/pet_and_alu_vla/240526/pretrained_model \
-  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/pet_aliser_plus_alisher_alu_madi_merged
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/smolvla/11-05-26/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
 ```
+
+# Multitaks Dit — current PET and alu checkpoint
+
+robotserver --show-cameras --policy --gamepad --record \
+  --task aluminium \
+  --policy-type multitask-Dit \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/multitask_Dit/09-06-26/150000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
+
+
+
+
 
 For SmolVLA, the **PS / Share** buttons on the gamepad live-switch between `--task` (primary) and `task_secondary` so you can flip between PET and aluminium without restarting. See [SmolVLA](#smolvla) below for details.
 
+Make a wrist-only copy of a `_complete` dataset (frequent — keeps the original intact, writes a sibling `_wrist` dataset with the top-down camera removed):
+
+```bash
+DSET=/home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-05-28_ALU_complete   # <-- change this
+NEW_DSET="${DSET%_complete}_wrist"
+lerobot-edit-dataset \
+  --repo_id "$(basename "$DSET")" \
+  --root "$DSET" \
+  --new_repo_id "$(basename "$NEW_DSET")" \
+  --new_root "$NEW_DSET" \
+  --operation.type remove_feature \
+  --operation.feature_names "['observation.images.topdown']"
+
+lerobot-edit-dataset \
+  --repo_id "$(basename "$NEW_DSET")" \
+  --root "$NEW_DSET" \
+  --operation.type recompute_stats
+```
+
+See [Remove a camera feature](#remove-a-camera-feature-eg-drop-the-top-down-camera) for the in-place variant.
 
 ---
 
@@ -200,7 +246,7 @@ Use `--no-cameras` when testing without devices (cannot combine with `--record` 
 | `--task pet\|aluminium\|custom` | Task sentence written into the dataset (and used by language-conditioned policies at inference). `pet` → `"Pick up PET bottle"`, `aluminium` → `"Pick up aluminium can"`, `custom` → prompts for free-form text on stdin. If omitted, falls back to `config.task`. |
 | `--name <operator>` | Operator name appended to the session folder, e.g. `--name sebastien` → `data/raw/2026-05-28_14-22-01_sebastien/`. Used with `--record` to track who recorded each session. |
 | `--policy` | Learned policy (see [Policy](#policy)); use with `--gamepad` to toggle policy on/off. |
-| `--policy-type act\|smolvla` | Policy family; controls camera feature renaming. Required with `--policy`. |
+| `--policy-type act\|smolvla\|diffusion` | Policy family; controls camera feature renaming. Required with `--policy`. |
 | `--policy-path` | Policy checkpoint path or Hugging Face repo id. Required with `--policy`. |
 | `--policy-repo-id` | LeRobot dataset root/repo id used for feature metadata and normalization stats. Required with `--policy`. |
 | `--policy-device` | `cuda`, `cpu`, or `auto` for policy inference. |
@@ -321,7 +367,49 @@ python scripts/convert_images_to_video.py /path/to/dataset
 python scripts/upload_to_huggingface.py /path/to/dataset_video ORG/dataset-name
 ```
 
-Visualizer: [LeRobot dataset visualizer](https://huggingface.co/spaces/lerobot/visualize_dataset).
+Visualizer (web, requires the dataset to be on the Hub): [LeRobot dataset visualizer](https://huggingface.co/spaces/lerobot/visualize_dataset).
+
+### Reviewing episodes locally (triage loop)
+
+To step through every episode of a local dataset and decide which ones to keep or drop, paste this into a terminal and edit only the `DSET=` line:
+
+```bash
+DSET=/home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/2026-05-28_PET_complete   # <-- change this
+REPO=$(basename "$DSET")
+VERDICTS_DIR=/home/arc_user/workspaces/Sorting-piper-robot-server/data/datasets_processings_txts
+mkdir -p "$VERDICTS_DIR"
+VERDICTS="$VERDICTS_DIR/triage_${REPO}.txt"
+: > "$VERDICTS"
+
+for i in $(seq 0 10000); do
+  echo "=== Episode $i ==="
+  lerobot-dataset-viz --root "$DSET" --repo-id "$REPO" --episode-index "$i" 2>/dev/null &
+  PID=$!
+  # Detect "episode index out of range" (the script exits within ~1s).
+  sleep 1
+  if ! kill -0 "$PID" 2>/dev/null; then
+    wait "$PID" 2>/dev/null
+    echo "No more episodes (stopped at $i)."
+    break
+  fi
+  read -p "Verdict [k=keep / d=drop / s=skip / q=quit]: " v
+  kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
+  case "$v" in
+    q) break ;;
+    d) echo "$i drop" >> "$VERDICTS" ;;
+    k) echo "$i keep" >> "$VERDICTS" ;;
+    *) echo "$i skip" >> "$VERDICTS" ;;
+  esac
+done
+
+echo
+echo "Verdicts written to $VERDICTS"
+grep drop "$VERDICTS" || echo "(no episodes marked for drop)"
+```
+
+- The loop goes up to `10000` and breaks gracefully when the dataset runs out, so it works for any dataset size — no need to look up the episode count first.
+- Each iteration opens a rerun window with the wrist video + joint states + actions on a synchronized timeline; scrub through it, then type `k` / `d` / `s` / `q` in the terminal to advance.
+- At the end you get `~/triage_<dataset>.txt` listing keep/drop/skip per episode. The `grep drop` line prints just the indices you want to remove, which you can feed into a deletion script later.
 
 ---
 
@@ -402,3 +490,94 @@ For video datasets, prefer `--dataset.video_backend=pyav` during `lerobot-train`
 ## Internal model note
 
 The stack is configured for single-arm model + single-arm IK/control only.
+
+---
+
+## LeRobot helpers
+
+Common dataset maintenance commands using `lerobot-edit-dataset` (already installed in `piper_new`). All examples below operate on a local dataset via `--root`; the `--repo_id` is just a label and doesn't have to match anything on the Hub.
+
+### Recompute statistics
+
+Walks every episode and rebuilds `meta/stats.json` / `meta/episodes_stats/` from the actual data on disk. Use this whenever you've changed the contents of a dataset (added/removed episodes, removed a camera by hand, etc.) and downstream tools complain about stale or missing stats:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id madi_plus_aluminium_merged_wrist_only \
+  --root /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/madi_plus_aluminium_merged_wrist_only \
+  --operation.type recompute_stats
+```
+
+### Remove a camera feature (e.g. drop the top-down camera)
+
+Removes a feature properly — deletes the corresponding video/parquet entries and updates `info.json` and stats in one shot. Check the `features` block of the dataset's `meta/info.json` to confirm the exact feature name first:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id madi_plus_aluminium_merged_wrist_only \
+  --root /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/madi_plus_aluminium_merged_wrist_only \
+  --operation.type remove_feature \
+  --operation.feature_names "['observation.images.topdown']"
+```
+
+Safer variant — write the result to a new directory instead of mutating the original:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id madi_plus_aluminium_merged_wrist_only \
+  --root /home/arc_user/.../madi_plus_aluminium_merged_wrist_only \
+  --new_repo_id madi_plus_aluminium_merged_wrist_only_clean \
+  --new_root /home/arc_user/.../madi_plus_aluminium_merged_wrist_only_clean \
+  --operation.type remove_feature \
+  --operation.feature_names "['observation.images.topdown']"
+```
+
+### Merge / combine datasets
+
+Combine several local datasets into a single new release dataset. Provide `--operation.repo_ids` (labels) and `--operation.roots` (their actual paths), plus the destination via `--new_repo_id` + `--new_root`:
+
+```bash
+lerobot-edit-dataset \
+  --new_repo_id pet_plus_aluminium_merged_wrist_only \
+  --new_root /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/pet_plus_aluminium_merged_wrist_only \
+  --operation.type merge \
+  --operation.repo_ids "['madi_plus_aluminium_merged_wrist_only', 'pet_aliser_plus_alisher_alu_madi_merged']" \
+  --operation.roots "['/home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/madi_plus_aluminium_merged_wrist_only', '/home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/pet_aliser_plus_alisher_alu_madi_merged']"
+```
+
+The merged dataset gets fresh stats computed across all inputs, so you usually don't need to `recompute_stats` afterwards. Source datasets must share the same feature schema (same cameras, same state/action shape) — if you removed the top-down camera from only one of them, run `remove_feature` on the other first so they match.
+
+### Delete specific episodes
+
+Drops episodes by index and renumbers the rest. Pair this with the [Reviewing episodes locally](#reviewing-episodes-locally-triage-loop) workflow — the `drop` lines in your triage `.txt` give you the indices to pass here:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id madi_plus_aluminium_merged_wrist_only \
+  --root /home/arc_user/.../madi_plus_aluminium_merged_wrist_only \
+  --operation.type delete_episodes \
+  --operation.episode_indices "[2, 4, 17]"
+```
+
+### Convert image frames to video
+
+If a dataset was recorded with `use_video=False` (raw PNG frames under `images/`), this converts it to the video-backed format that training/visualization expects:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id madi_plus_aluminium_merged_wrist_only \
+  --root /home/arc_user/.../madi_plus_aluminium_merged_wrist_only \
+  --operation.type convert_image_to_video
+```
+
+### Inspect a dataset
+
+Quick overview of episode count, total frames, features, fps, etc. — useful before running any of the destructive operations above:
+
+```bash
+lerobot-edit-dataset \
+  --repo_id 2026-05-28_PET_complete \
+  --root /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/2026-05-28_PET_complete \
+  --operation.type info \
+  --operation.show_features true
+```

@@ -140,7 +140,7 @@ def main():
         "--policy-type",
         type=str,
         default=None,
-        choices=["act", "smolvla"],
+        choices=["act", "smolvla", "diffusion", "multitask-Dit"],
         help="Policy family; controls camera feature renaming for deployment.",
     )
     parser.add_argument(
@@ -203,7 +203,9 @@ def main():
         config.policy_type = args.policy_type
     if config.policy_type == "smolvla":
         config.policy_rename_map = {"observation.images.wrist1": "observation.images.camera1"}
-    elif config.policy_type == "act":
+    elif config.policy_type in ("act", "diffusion", "multitask-Dit"):
+        # multitask-Dit expects observation.images.wrist1/topdown, matching the
+        # dataset feature names, so no renaming is needed (unlike smolvla).
         config.policy_rename_map = {}
     if args.policy_device is not None:
         config.policy_device = args.policy_device
@@ -224,7 +226,9 @@ def main():
     if config.use_policy:
         assert args.policy_path is not None, "--policy requires --policy-path"
         assert args.policy_repo_id is not None, "--policy requires --policy-repo-id"
-        assert args.policy_type is not None, "--policy requires --policy-type act|smolvla"
+        assert args.policy_type is not None, (
+            "--policy requires --policy-type act|smolvla|diffusion|multitask-Dit"
+        )
         assert not args.keyboard, "Keyboard control cannot be used when policy control is enabled"
         if args.record:
             assert args.gamepad, (

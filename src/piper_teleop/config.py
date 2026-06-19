@@ -269,7 +269,7 @@ class TelegripConfig:
     # `task` is also the sentence written into recorded datasets.
     task: str = "Pick up PET bottle"
     task_secondary: str = "Pick up aluminium can"
-    use_video = True
+    use_video = False
     convert_images_to_video = False  # Post-processing option when use_video=False. If True, converts the PNG frames to video format after recording completes.
     display_data = False
     show_camera_feeds: bool = False
