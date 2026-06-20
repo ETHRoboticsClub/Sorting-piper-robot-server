@@ -1,0 +1,10 @@
+#!/bin/bash
+# Bring up the Piper follower CAN bus as left_piper at 1 Mbit/s.
+# Mirrors the README manual bring-up. Re-plug the USB-CAN if it stops responding,
+# then run this again.
+set -e
+
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 1000000
+sudo ip link set can0 name left_piper
+sudo ip link set left_piper up
