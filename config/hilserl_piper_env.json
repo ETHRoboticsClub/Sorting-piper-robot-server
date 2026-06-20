@@ -47,8 +47,8 @@
         "urdf_path": "URDF/Piper/piper_description.urdf",
         "target_frame_name": "ee",
         "end_effector_bounds": {
-          "min": [0.0, -0.45, -0.15],
-          "max": [0.55, 0.45, 0.5]
+          "min": [-0.3, -0.65, -0.15],
+          "max": [0.75, 0.65, 0.5]
         },
         "end_effector_step_sizes": {
           "x": 0.008,
@@ -56,7 +56,21 @@
           "z": 0.008
         }
       },
-      "max_gripper_pos": 0.07
+      "max_gripper_pos": 0.07,
+      "yolo_grasp_reward": {
+        "weights_path": "/home/ethrc/Sorting-piper-robot-server/cls_train_val_210526_nativeish2/weights/best.pt",
+        "success_classes": ["PET", "Aluminium"],
+        "confidence_threshold": 0.5,
+        "camera_key": "wrist",
+        "gripper_source": "command",
+        "max_gripper_pos": 0.07,
+        "gripper_closed_is_low": true,
+        "closed_threshold": 0.5,
+        "hold_seconds": 1.0,
+        "success_reward": 1.0,
+        "failure_reward": 0.0,
+        "terminate_on_failure": false
+      }
     }
   },
   "dataset": {

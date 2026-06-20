@@ -1,0 +1,137 @@
+{
+  "output_dir": null,
+  "job_name": "piper_hilserl_pet",
+  "resume": false,
+  "seed": 1000,
+  "num_workers": 4,
+  "batch_size": 256,
+  "steps": 100000,
+  "log_freq": 500,
+  "save_checkpoint": true,
+  "save_freq": 5000,
+  "wandb": { "enable": false, "project": "piper_hilserl" },
+  "dataset": {
+    "repo_id": "local/pet_alu_eedelta_labeled",
+    "root": "/home/ethrc/2026-06-19_pet_alu_wrist_only_eedelta_labeled_crop128",
+    "use_imagenet_stats": false,
+    "video_backend": "pyav",
+    "episodes": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49]
+  },
+  "mixer": "online_offline",
+  "online_ratio": 0.5,
+  "algorithm": {
+    "type": "sac",
+    "actor_lr": 3e-4,
+    "critic_lr": 3e-4,
+    "temperature_lr": 3e-4,
+    "discount": 0.97,
+    "use_backup_entropy": true,
+    "critic_target_update_weight": 0.005,
+    "num_critics": 2,
+    "num_subsample_critics": null,
+    "critic_network_kwargs": { "hidden_dims": [256, 256], "activate_final": true, "final_activation": null },
+    "discrete_critic_network_kwargs": { "hidden_dims": [256, 256], "activate_final": true, "final_activation": null },
+    "temperature_init": 0.01,
+    "target_entropy": null,
+    "utd_ratio": 2,
+    "policy_update_freq": 1,
+    "grad_clip_norm": 10.0,
+    "use_torch_compile": false
+  },
+  "policy": {
+    "type": "gaussian_actor",
+    "push_to_hub": false,
+    "n_obs_steps": 1,
+    "normalization_mapping": { "VISUAL": "MEAN_STD", "STATE": "MIN_MAX", "ENV": "MIN_MAX", "ACTION": "MIN_MAX" },
+    "input_features": {
+      "observation.images.wrist1": { "type": "VISUAL", "shape": [3, 128, 128] },
+      "observation.state": { "type": "STATE", "shape": [7] }
+    },
+    "output_features": { "action": { "type": "ACTION", "shape": [6] } },
+    "dataset_stats": {
+      "observation.images.wrist1": { "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225] },
+      "observation.state": {
+        "min": [-2.6179, 0.0, -2.967, -1.745, -1.22, -1.5, 0.0],
+        "max": [2.6179, 3.14, 0.0, 1.745, 1.22, 1.5, 0.07]
+      },
+      "action": { "min": [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0] }
+    },
+    "num_discrete_actions": 3,
+    "device": "cuda",
+    "storage_device": "cpu",
+    "use_amp": false,
+    "vision_encoder_name": "lerobot/resnet10",
+    "freeze_vision_encoder": true,
+    "image_encoder_hidden_dim": 32,
+    "shared_encoder": true,
+    "online_steps": 1000000,
+    "online_buffer_capacity": 15000,
+    "offline_buffer_capacity": 10000,
+    "online_step_before_learning": 100,
+    "state_encoder_hidden_dim": 256,
+    "latent_dim": 64,
+    "actor_network_kwargs": { "hidden_dims": [256, 256], "activate_final": true },
+    "policy_kwargs": { "use_tanh_squash": true, "std_min": -5, "std_max": 2, "init_final": 0.05 },
+    "actor_learner_config": { "learner_host": "127.0.0.1", "learner_port": 50051, "policy_parameters_push_frequency": 50 },
+    "concurrency": { "actor": "threads", "learner": "threads" },
+    "repo_id": null
+  },
+  "env": {
+    "type": "gym_manipulator",
+    "name": "real_robot",
+    "fps": 30,
+    "task": "pet",
+    "robot": {
+      "type": "piper_follower",
+      "port": "left_piper",
+      "max_relative_target": null,
+      "cameras": {
+        "wrist1": { "type": "intelrealsense", "serial_number_or_name": "234322305361", "fps": 30, "width": 640, "height": 480 }
+      }
+    },
+    "teleop": { "type": "piper_gamepad_6dof", "use_gripper": true },
+    "processor": {
+      "control_mode": "gamepad",
+      "max_gripper_pos": 0.07,
+      "observation": { "display_cameras": false, "add_joint_velocity_to_observation": false, "add_current_to_observation": false, "add_ee_pose_to_observation": false },
+      "image_preprocessing": { "crop_params_dict": null, "resize_size": [128, 128] },
+      "gripper": { "use_gripper": true, "gripper_penalty": 0.0 },
+      "reset": {
+        "fixed_reset_joint_positions": [0.0, 0.993, -0.893, 0.0, 1.22, 0.0, 0.07],
+        "reset_time_s": 2.0,
+        "control_time_s": 20.0,
+        "terminate_on_success": true
+      },
+      "inverse_kinematics": {
+        "urdf_path": "URDF/Piper/piper_description.urdf",
+        "target_frame_name": "ee",
+        "end_effector_bounds": { "min": [0.0, -0.45, -0.15], "max": [0.55, 0.45, 0.5] },
+        "end_effector_step_sizes": { "x": 0.008, "y": 0.008, "z": 0.008 }
+      },
+      "yolo_grasp_reward": {
+        "weights_path": "/home/ethrc/Sorting-piper-robot-server/cls_train_val_210526_nativeish2/weights/best.pt",
+        "success_classes": ["PET", "Aluminium"],
+        "confidence_threshold": 0.5,
+        "camera_key": "wrist",
+        "gripper_source": "command",
+        "max_gripper_pos": 0.07,
+        "gripper_closed_is_low": true,
+        "closed_threshold": 0.5,
+        "hold_seconds": 1.0,
+        "success_reward": 1.0,
+        "failure_reward": 0.0,
+        "terminate_on_failure": false
+      }
+    },
+    "features": {
+      "observation.images.wrist1": { "type": "VISUAL", "shape": [3, 128, 128] },
+      "observation.state": { "type": "STATE", "shape": [7] },
+      "action": { "type": "ACTION", "shape": [6] }
+    },
+    "features_map": {
+      "observation.images.wrist1": "observation.images.wrist1",
+      "observation.state": "observation.state",
+      "action": "action"
+    }
+  }
+}

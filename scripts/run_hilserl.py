@@ -38,22 +38,11 @@ import lerobot.cameras.opencv.configuration_opencv  # noqa: F401
 # Registers PiperFollowerConfig / PiperGamepad6DofConfig with the draccus choice
 # registries (the import side effect is the point).
 import piper_teleop.lerobot_plugin  # noqa: F401
-from piper_teleop.lerobot_plugin.arm_ik_kinematics import ArmIkKinematics
-from piper_teleop.lerobot_plugin import processors as P
-
-
-def _apply_patches() -> None:
-    gm.RobotKinematics = ArmIkKinematics
-    gm.InterventionActionProcessorStep = P.InterventionAction6DofProcessorStep
-    gm.MapTensorToDeltaActionDictStep = P.MapTensorToDelta6DofActionDictStep
-    gm.MapDeltaActionToRobotActionStep = P.MapDelta6DofActionToRobotActionStep
-    # Persistent absolute target -> held orientation doesn't leak toward level
-    # while translating (lets you hold a top-down grasp). See processors.py.
-    gm.EEReferenceAndDelta = P.PersistentTargetEEReferenceAndDelta
-    # Boolean (latched) gripper instead of velocity integration.
-    gm.GripperVelocityToJoint = P.BooleanGripperStep
+from piper_teleop.lerobot_plugin.patches import apply_lerobot_patches
 
 
 if __name__ == "__main__":
-    _apply_patches()
+    # Arm_IK + 6-DOF + persistent target + boolean gripper + pyav video backend.
+    # Shared with the SAC actor/learner so every env-building process matches.
+    apply_lerobot_patches() # Note: really we should create a fork of lerobot and permanently apply these changes.
     gm.main()

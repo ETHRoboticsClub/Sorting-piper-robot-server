@@ -66,34 +66,95 @@ Plugin (`src/piper_teleop/lerobot_plugin/`):
 | `arm_ik_kinematics.py` | `RobotKinematics` drop-in backed by Arm_IK (radians; matches robotserver's `solve_ik`; collision check disabled; solver noise suppressed) |
 | `processors.py` | 6-DOF replacements for LeRobot's hardcoded-3-DOF action steps; **persistent-target** EE reference (orientation doesn't leak while translating); **boolean** latched gripper |
 
-The launcher applies six patches: `RobotKinematics`, the three 6-DOF action steps,
-`EEReferenceAndDelta` (persistent target), and `GripperVelocityToJoint` (boolean).
+All patches live in one place — `patches.py`'s **`apply_lerobot_patches()`** — and
+every entrypoint (teleop/record, and the SAC learner + actor) calls it, so every
+process that builds an env behaves identically. The seven patches:
+`RobotKinematics` (Arm_IK), the three 6-DOF action steps, `EEReferenceAndDelta`
+(persistent target), `GripperVelocityToJoint` (boolean), the env **action space**
+(stock `RobotEnv` hardcodes 3-DOF → bumped to 6), and the **pyav** video backend
+(torchcodec fails to decode the recorded mp4s).
 
 ### YOLO grasp reward
 
-`GripperHoldYoloGraspRewardStep` (in `~/lerobot`'s `processor/hil_processor.py`):
-once the gripper is held closed for `hold_seconds`, it runs the YOLO-cls model
-(`cls_train_val_210526_nativeish2/weights/best.pt`, classes
+`GripperHoldYoloGraspRewardStep` (in `~/lerobot`'s `processor/hil_processor.py`,
+added by a colleague): once the gripper is held closed for `hold_seconds`, it runs
+the YOLO-cls model (`cls_train_val_210526_nativeish2/weights/best.pt`, classes
 Aluminium/Empty/Other/PET) on the wrist camera. Top-1 in `success_classes`
 (PET/Aluminium, conf ≥ threshold) → reward + episode end. **This replaces training a
 separate LeRobot reward classifier.** Configured under `processor.yolo_grasp_reward`.
 
-## Config knobs (`config/hilserl_piper_env.json`)
+## Reusing existing (old-stack) demos
+
+The old `robotserver` datasets record **absolute joint targets**; HIL-SERL wants
+**EE-delta** actions. Two offline tools bridge that (both reuse Arm_IK / the YOLO
+step, so offline and online stay consistent):
+
+```bash
+# 1. joint targets -> EE-delta action space (FK via Arm_IK; videos copied as-is)
+python scripts/convert_joint_demos_to_ee.py SRC ~/..._eedelta
+
+# 2. add sparse next.reward/next.done by replaying the live YOLO grasp logic;
+#    success episodes are trimmed at the grasp, failed grasps kept as negatives
+python scripts/label_rewards_yolo.py ~/..._eedelta ~/..._eedelta_labeled
+```
+
+## Training (SAC)
+
+LeRobot HIL-SERL is a distributed SAC: a **learner** (trains on streamed
+transitions + the offline demo buffer, serves weights over gRPC) and an **actor**
+(runs the policy on the robot, collects experience, takes human interventions).
+Both use one config — `config/sac_piper.json` (gaussian-actor policy, 6 continuous
+EE-delta + discrete gripper, wrist 128² + 7-joint state, SAC, our env + YOLO
+reward, demos seeding the offline buffer).
+
+```bash
+# 0. one-time: resize the labeled demos' wrist cam to 128x128 (fast ffmpeg transcode,
+#    ~2 min). A wrist cam is already framed on the workspace, so --no-crop (resize
+#    only) is fine; drop it to drag a tighter ROI box and paste the params into the
+#    config's image_preprocessing.crop_params_dict.
+python scripts/crop_demos.py \
+  --root ~/..._eedelta_labeled --new-root ~/..._eedelta_labeled_crop128 --no-crop
+
+# 1. learner (no robot needed; validates the policy build + demo seeding)
+python scripts/run_sac_learner.py --config_path config/sac_piper.json
+
+# 2. actor, separate terminal, on the robot
+./scripts/restart-can
+python scripts/run_sac_actor.py --config_path config/sac_piper.json
+```
+
+Then it's the HIL-SERL loop: the policy explores, you toggle Share to intervene and
+correct/demonstrate, the YOLO reward fires on grasps, and the learner improves the
+policy once `online_step_before_learning` transitions have arrived. Needs a CUDA GPU
+(`policy.device`) and the `hilserl` extra (grpcio).
+
+**Memory matters.** The replay buffers pre-allocate `capacity × frame` up front, and
+a float32 128² frame is ~0.4 MB (state + next). On a 12 GB GPU / 31 GB box we keep
+buffers in RAM (`policy.storage_device: cpu`), cap them small (`offline 10k /
+online 15k`), and **seed from a subset of demos** (`dataset.episodes: [0..49]` =
+~9 k frames, the standard HIL-SERL 20-50 demo seed) — the full 195 k frames won't
+fit. To use more demos: grow the episode list + capacities (watch RAM) or switch to
+uint8 image storage.
+
+## Config knobs
+
+`config/hilserl_piper_env.json` (teleop/record) and `config/sac_piper.json` (RL):
 
 - `processor.reset.fixed_reset_joint_positions` — home pose (radians, 6 joints + gripper)
-- `processor.inverse_kinematics.end_effector_bounds` — workspace box (no collision floor; this is the only limit besides reach)
+- `processor.inverse_kinematics.end_effector_bounds` — workspace box (no collision floor; the only limit besides reach)
 - `processor.inverse_kinematics.end_effector_step_sizes` — metres per teleop step
 - `processor.yolo_grasp_reward.{weights_path,success_classes,confidence_threshold,hold_seconds,camera_key}`
-- `dataset.{repo_id,task,num_episodes_to_record}`
+- `processor.image_preprocessing.{crop_params_dict,resize_size}` — must match what `crop_demos.py` produced
+- SAC: `policy.{input_features,output_features,num_discrete_actions,device}`, `algorithm.*`, `dataset.root` (the crop128 demos)
 
 ## Status
 
 **Working / hardware-validated:** 6-DOF teleop through LeRobot, Arm_IK, persistent
-top-down orientation, boolean gripper, cameras + dataset recording, YOLO grasp reward
-wired into the env pipeline.
+top-down orientation, boolean gripper, cameras + dataset recording, YOLO grasp
+reward (live + offline labeling), old-demo → EE-delta conversion + reward labeling.
 
-**Still missing for full HIL-SERL training:**
-1. Record a reward-labeled demo dataset (teleop).
-2. SAC actor/learner config (policy/vision encoder, image crop ROI, replay buffer seeded with demos, gRPC).
-3. **Apply the six monkeypatches in the SAC actor process** — they currently live only in `run_hilserl.py`, so the actor would otherwise build the stock 3-DOF/placo pipeline.
-4. Safety review for autonomous exploration (collision is off; EE bounds + human intervention are the net).
+**SAC: learner builds + seeds, not yet trained on hardware.** The learner builds the
+policy (gaussian-actor + resnet10, ~530 K learnable params) and seeds the offline
+buffer from the demos (verified). Remaining: run the actor on the robot for the live
+loop, tune (reward/crop/step sizes, demo count), and a safety review for autonomous
+exploration (collision is off; EE bounds + human intervention are the net).
