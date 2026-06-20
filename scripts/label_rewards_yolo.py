@@ -35,6 +35,7 @@ from piper_teleop.lerobot_plugin.patches import apply_lerobot_patches
 DEFAULT_WEIGHTS = "cls_train_val_210526_nativeish2/weights/best.pt"
 RECOMPUTE_FEATS = [
     "action", "observation.state", "next.reward", "next.done",
+    "complementary_info.discrete_penalty",
     "timestamp", "frame_index", "episode_index", "index", "task_index",
 ]
 
@@ -156,6 +157,11 @@ def main():
     new_df = df.loc[keep_pos].reset_index(drop=True).copy()
     new_df["next.reward"] = np.concatenate(rewards).astype(np.float32)
     new_df["next.done"] = np.concatenate(dones)
+    # The HIL-SERL actor attaches complementary_info.discrete_penalty to every
+    # online transition; the SAC discrete-critic loss adds it to the reward. The
+    # offline demos must carry the same key (zeros) or the online+offline batch
+    # mix mismatches (256 vs 128). See sac_algorithm._compute_loss_discrete_critic.
+    new_df["complementary_info.discrete_penalty"] = np.zeros(len(new_df), dtype=np.float32)
     new_df["index"] = np.arange(len(new_df), dtype=np.int64)
 
     # ---- write dataset dir (meta copied/edited, data rewritten, videos linked/copied) ----
@@ -172,6 +178,9 @@ def main():
     # info.json: add reward/done features + new totals
     info["features"]["next.reward"] = {"dtype": "float32", "shape": [1], "names": None}
     info["features"]["next.done"] = {"dtype": "bool", "shape": [1], "names": None}
+    info["features"]["complementary_info.discrete_penalty"] = {
+        "dtype": "float32", "shape": [1], "names": ["discrete_penalty"]
+    }
     info["total_frames"] = int(len(new_df))
     info["total_episodes"] = int(new_df["episode_index"].nunique())
     info["splits"] = {"train": f"0:{info['total_episodes']}"}

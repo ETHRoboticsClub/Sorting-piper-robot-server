@@ -123,10 +123,20 @@ python scripts/run_sac_learner.py --config_path config/sac_piper.json
 python scripts/run_sac_actor.py --config_path config/sac_piper.json
 ```
 
-Then it's the HIL-SERL loop: the policy explores, you toggle Share to intervene and
-correct/demonstrate, the YOLO reward fires on grasps, and the learner improves the
-policy once `online_step_before_learning` transitions have arrived. Needs a CUDA GPU
-(`policy.device`) and the `hilserl` extra (grpcio).
+**How it learns (important).** There is **no offline pre-training**. The actor starts
+acting immediately with a randomly-initialised policy (so it flails at first); the
+demos only *seed the replay buffer* and are mixed into every gradient batch
+(`online_ratio 0.5`). The learner waits for `online_step_before_learning` *online*
+transitions, then learns and acts concurrently. The real early-learning driver is
+**you**: toggle Share and tele-operate good grasps generously — those interventions
+are high-quality on-policy data. (For a non-random start, BC/ACT-pretrain a policy on
+the demos and point `policy.pretrained_path` at it — a worthwhile future step given
+the 1429 demos / existing ACT policy.)
+
+**Demos need `complementary_info.discrete_penalty`.** The actor attaches it to every
+online transition and the SAC discrete-critic loss adds it to the reward, so the
+offline demos must carry the same (zero) column or the mixed batch mismatches.
+`label_rewards_yolo.py` writes it; older datasets need it added.
 
 **Memory matters.** The replay buffers pre-allocate `capacity × frame` up front, and
 a float32 128² frame is ~0.4 MB (state + next). On a 12 GB GPU / 31 GB box we keep
@@ -135,6 +145,10 @@ online 15k`), and **seed from a subset of demos** (`dataset.episodes: [0..49]` =
 ~9 k frames, the standard HIL-SERL 20-50 demo seed) — the full 195 k frames won't
 fit. To use more demos: grow the episode list + capacities (watch RAM) or switch to
 uint8 image storage.
+
+Needs a CUDA GPU (`policy.device`) and the `hilserl` extra (grpcio). Note the actor
+logs a low **policy FPS** (the per-step Arm_IK solve dominates) — drop `env.fps` or
+speed up the IK if the loop runs far behind real time.
 
 ## Config knobs
 
@@ -153,8 +167,11 @@ uint8 image storage.
 top-down orientation, boolean gripper, cameras + dataset recording, YOLO grasp
 reward (live + offline labeling), old-demo → EE-delta conversion + reward labeling.
 
-**SAC: learner builds + seeds, not yet trained on hardware.** The learner builds the
-policy (gaussian-actor + resnet10, ~530 K learnable params) and seeds the offline
-buffer from the demos (verified). Remaining: run the actor on the robot for the live
-loop, tune (reward/crop/step sizes, demo count), and a safety review for autonomous
-exploration (collision is off; EE bounds + human intervention are the net).
+**SAC: learner + actor run on hardware; first training pass works.** The learner
+builds the policy (gaussian-actor + resnet10, ~530 K params), seeds the offline
+buffer, and trains on the online+offline mix without crashing; the actor runs the
+policy on the robot, resets every episode, and streams transitions. Remaining: a real
+training session with heavy early interventions, then tuning — speed up the control
+loop (low policy FPS), BC/ACT warm-start instead of a random init, reward/crop/step
+tuning, more demos, and a safety review for autonomous exploration (collision is off;
+EE bounds + human intervention are the net).
