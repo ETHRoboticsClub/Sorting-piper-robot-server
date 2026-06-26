@@ -85,9 +85,8 @@ class ControlLoop:
                 secondary_task=getattr(config, "task_secondary", ""),
             )
         self.visualize = config.enable_visualization
+        self.use_async = getattr(config, "use_async", False)
         if self.use_policy:
-            from piper_teleop.robot_server.lerobot_policy import LerobotPolicy
-
             policy_path = config.policy_path
             repo_id = config.policy_repo_id
             pd = getattr(config, "policy_device", "cuda") or "cuda"
@@ -97,13 +96,37 @@ class ControlLoop:
                 logger.warning("policy_device=cuda but CUDA not available; using cpu")
                 pd = "cpu"
             logger.info("LeRobot policy inference device: %s", pd)
-            self.policy = LerobotPolicy(
-                policy_path,
-                repo_id,
-                device=pd,
-                rename_map=getattr(config, "policy_rename_map", None),
-                task=getattr(config, "task", ""),
-            )
+            if self.use_async:
+                # Async deployment: launches LeRobot's policy_server + a gRPC client whose
+                # .predict() matches LerobotPolicy.predict(), so the loop below is unchanged.
+                from piper_teleop.robot_server.async_policy import AsyncPolicyClient
+
+                logger.info("Async policy deployment enabled (policy_server on %s:%d).",
+                            config.async_host, config.async_port)
+                self.policy = AsyncPolicyClient(
+                    policy_path=policy_path,
+                    repo_id=repo_id,
+                    policy_type=config.policy_type,
+                    device=pd,
+                    host=config.async_host,
+                    port=config.async_port,
+                    fps=config.fps,
+                    actions_per_chunk=config.async_actions_per_chunk,
+                    chunk_size_threshold=config.async_chunk_size_threshold,
+                    aggregate_fn_name=config.async_aggregate_fn,
+                    dof=config.dof,
+                    task=getattr(config, "task", ""),
+                )
+            else:
+                from piper_teleop.robot_server.lerobot_policy import LerobotPolicy
+
+                self.policy = LerobotPolicy(
+                    policy_path,
+                    repo_id,
+                    device=pd,
+                    rename_map=getattr(config, "policy_rename_map", None),
+                    task=getattr(config, "task", ""),
+                )
             self._policy_override_active_last = False
             self._policy_task_last = None
 

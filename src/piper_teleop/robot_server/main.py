@@ -151,6 +151,23 @@ def main():
         help="Policy inference device (default: config policy_device, usually cuda).",
     )
     parser.add_argument(
+        "--async",
+        dest="use_async",
+        action="store_true",
+        help="Deploy the policy asynchronously via LeRobot's policy_server (smoother for slow "
+        "policies like diffusion / multi-task DiT). Teleop and recording are unaffected.",
+    )
+    parser.add_argument("--async-port", type=int, default=None, help="Port for the async policy_server.")
+    parser.add_argument(
+        "--actions-per-chunk", type=int, default=None, help="Actions per predicted chunk (async)."
+    )
+    parser.add_argument(
+        "--chunk-threshold",
+        type=float,
+        default=None,
+        help="Request the next chunk when the queue drops below this fraction (async).",
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warning", "error", "critical"],
@@ -209,6 +226,13 @@ def main():
         config.policy_rename_map = {}
     if args.policy_device is not None:
         config.policy_device = args.policy_device
+    config.use_async = args.use_async
+    if args.async_port is not None:
+        config.async_port = args.async_port
+    if args.actions_per_chunk is not None:
+        config.async_actions_per_chunk = args.actions_per_chunk
+    if args.chunk_threshold is not None:
+        config.async_chunk_size_threshold = args.chunk_threshold
     config.show_camera_feeds = args.show_cameras
     session_dirname = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if args.name:

@@ -2,7 +2,19 @@
 
 Teleoperation server for AgileX Piper arms with **keyboard**, **gamepad**, or learned-policy control, optional **cameras** and **LeRobot** recording. Runtime in this repo is **single-arm only** and uses `URDF/Piper/piper_description.urdf`.
 
-**Optional setups:** trained policy (`--policy`) — both **ACT** and **SmolVLA** (language-conditioned VLA) checkpoints are supported.
+**Optional setups:** trained policy (`--policy`) — **ACT**, **Diffusion**, **SmolVLA** (language-conditioned VLA), and **multi-task DiT** checkpoints are supported.
+
+**Async deployment (`--async`):** run slow policies (Diffusion, multi-task DiT) through LeRobot's `policy_server` so inference happens *off* the control loop — the arm runs smoother and teleop/recording behave exactly as in sync mode. Example — **multi-task DiT, async**:
+
+```bash
+robotserver --show-cameras --policy --gamepad --async \
+  --task aluminium \
+  --policy-type multitask-Dit \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/multitask_Dit/09-06-26/150000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
+```
+
+See [Async deployment](#async-deployment) for the flags and how it works. Drop `--async` to run synchronously (default).
 
 ## Prerequisites
 
@@ -70,13 +82,40 @@ robotserver --show-cameras --policy --gamepad --record \
 # Multitaks Dit — current PET and alu checkpoint
 
 robotserver --show-cameras --policy --gamepad --record \
-  --task aluminium \
+  --task pet \
   --policy-type multitask-Dit \
   --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/multitask_Dit/09-06-26/150000/pretrained_model \
   --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
 
 
+#### Async deployment
 
+Add `--async` to any `--policy` command to deploy through LeRobot's `policy_server`. The policy runs on a background server and the control loop pulls **action chunks** from a queue, so a slow forward pass (Diffusion, multi-task DiT, VLA) never stalls the arm. Everything else — teleop, recording, gamepad policy on/off — works the same as sync mode. Drop the flag to run synchronously (default).
+
+```bash
+# Diffusion, async
+robotserver --show-cameras --policy --gamepad --async \
+  --policy-type diffusion \
+  --policy-path <ckpt> --policy-repo-id <dataset> \
+  --actions-per-chunk 50 --chunk-threshold 0.5
+
+# Multi-task DiT, async (multi_task_dit is auto-registered as async-capable)
+robotserver --show-cameras --policy --gamepad --async \
+  --task pet \
+  --policy-type multitask-Dit \
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/multitask_Dit/09-06-26/150000/pretrained_model \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only 
+  --chunk-threshold 0.3
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--async` | off | Enable async deployment (launches the `policy_server` automatically). |
+| `--async-port` | 8080 | Port the `policy_server` binds to. |
+| `--actions-per-chunk` | 50 | Actions predicted per chunk; match the policy's action horizon. |
+| `--chunk-threshold` | 0.5 | Request the next chunk when the action queue drops below this fraction (raise toward 0.7 if you still see stalls). |
+
+Requires `grpcio` in the env: `pip install grpcio protobuf matplotlib`.
 
 
 For SmolVLA, the **PS / Share** buttons on the gamepad live-switch between `--task` (primary) and `task_secondary` so you can flip between PET and aluminium without restarting. See [SmolVLA](#smolvla) below for details.
@@ -246,10 +285,14 @@ Use `--no-cameras` when testing without devices (cannot combine with `--record` 
 | `--task pet\|aluminium\|custom` | Task sentence written into the dataset (and used by language-conditioned policies at inference). `pet` → `"Pick up PET bottle"`, `aluminium` → `"Pick up aluminium can"`, `custom` → prompts for free-form text on stdin. If omitted, falls back to `config.task`. |
 | `--name <operator>` | Operator name appended to the session folder, e.g. `--name sebastien` → `data/raw/2026-05-28_14-22-01_sebastien/`. Used with `--record` to track who recorded each session. |
 | `--policy` | Learned policy (see [Policy](#policy)); use with `--gamepad` to toggle policy on/off. |
-| `--policy-type act\|smolvla\|diffusion` | Policy family; controls camera feature renaming. Required with `--policy`. |
+| `--policy-type act\|smolvla\|diffusion\|multitask-Dit` | Policy family; controls camera feature renaming. Required with `--policy`. |
 | `--policy-path` | Policy checkpoint path or Hugging Face repo id. Required with `--policy`. |
 | `--policy-repo-id` | LeRobot dataset root/repo id used for feature metadata and normalization stats. Required with `--policy`. |
 | `--policy-device` | `cuda`, `cpu`, or `auto` for policy inference. |
+| `--async` | Deploy via LeRobot's `policy_server` (async, smoother for slow policies). See [Async deployment](#async-deployment). |
+| `--async-port` | Port for the async `policy_server` (default 8080). |
+| `--actions-per-chunk` | Actions per predicted chunk in async mode (default 50). |
+| `--chunk-threshold` | Request the next chunk when the queue drops below this fraction (default 0.5). |
 | `--repo-id` | Dataset repo id when recording. |
 | `--log-level` | `debug` … `critical` (default `info`). |
 | `--show-cameras` | Show local camera preview windows. |

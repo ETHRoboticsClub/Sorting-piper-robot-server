@@ -299,6 +299,14 @@ class TelegripConfig:
     policy_rename_map: Dict[str, str] = field(default_factory=dict)
     # LeRobot policy inference. Default cuda; use --policy-device cpu on machines without GPU.
     policy_device: str = "cuda"
+    # Async policy deployment (LeRobot policy_server/client). When False, the policy runs
+    # synchronously in the control loop exactly as before. Only consulted when use_policy=True.
+    use_async: bool = False
+    async_host: str = "127.0.0.1"
+    async_port: int = 8080
+    async_actions_per_chunk: int = 50
+    async_chunk_size_threshold: float = 0.5
+    async_aggregate_fn: str = "weighted_average"
     enable_visualization: bool = True
     autoconnect: bool = False
     log_level: str = "warning"
