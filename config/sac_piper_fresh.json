@@ -189,6 +189,13 @@
           "fps": 30,
           "width": 640,
           "height": 480
+        },
+        "topdown": {
+          "type": "intelrealsense",
+          "serial_number_or_name": "213522251124",
+          "fps": 30,
+          "width": 640,
+          "height": 480
         }
       }
     },
