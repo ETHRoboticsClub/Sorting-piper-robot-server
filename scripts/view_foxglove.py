@@ -33,12 +33,28 @@ from http.server import SimpleHTTPRequestHandler
 DEFAULT_ROOT = os.path.join("outputs", "foxglove")
 FOXGLOVE_APP = "https://app.foxglove.dev/~/view"
 
-_LAYOUT_HINT = """Suggested panels (Foxglove remembers your layout, so arrange once):
-  Image        /camera/wrist1        what the policy sees
-  Image        /grasp/overlay        wrist view + YOLO verdict
-  Plot         /reward.reward, /reward.episode_return, /control.value
-  Raw Messages /state, /action, /grasp
-"""
+def install_layout(episode: str) -> str | None:
+    """Install a layout whose panels match this episode's topics.
+
+    Foxglove opens a file with whatever layout is already selected, which on a
+    fresh install points at topics we never publish -- hence the stock
+    ``/depth`` / ``/left/image_rect`` panels. Adding our own layout is additive:
+    it never touches existing layouts, and re-running just updates it in place.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+        from piper_teleop.lerobot_plugin.foxglove_layout import (
+            LAYOUT_NAME,
+            build_layout,
+            install,
+            topics_in,
+        )
+
+        install(build_layout(topics_in(episode)))
+        return LAYOUT_NAME
+    except Exception as exc:  # noqa: BLE001 - never block opening the file
+        print(f"(could not install the Foxglove layout: {type(exc).__name__}: {exc})")
+        return None
 
 
 class RangeCORSHandler(SimpleHTTPRequestHandler):
@@ -142,6 +158,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list recorded episodes and exit")
     ap.add_argument("--web", action="store_true", help="use the browser app even if the desktop app exists")
     ap.add_argument("--no-browser", action="store_true", help="web mode: serve only, do not open a browser")
+    ap.add_argument("--no-layout", action="store_true", help="do not install/update the Foxglove layout")
     args = ap.parse_args()
 
     root = os.path.abspath(args.root)
@@ -167,12 +184,16 @@ def main() -> int:
         print(f"Not a file: {target}", file=sys.stderr)
         return 1
 
+    layout = None if args.no_layout else install_layout(target)
+
     app = None if args.web else find_desktop_app()
     if app:
         open_in_desktop(app, target)
         print(f"opening  {os.path.relpath(target, root)}")
         print(f"in       {app}\n")
-        print(_LAYOUT_HINT)
+        if layout:
+            print(f'Layout "{layout}" installed. Pick it once from the layout menu')
+            print("(top-left layout button); Foxglove remembers it from then on.\n")
         return 0
 
     # Serve the recording root so other episodes are reachable without a restart.
@@ -191,7 +212,9 @@ def main() -> int:
             threading.Timer(0.5, lambda: webbrowser.open(view_url)).start()
             print("Opening Foxglove in your browser...")
         print("Ctrl+C to stop serving.\n")
-        print(_LAYOUT_HINT)
+        if layout:
+            print(f'Layout "{layout}" installed for the desktop app; in the web app')
+            print("import it from ~/.config/Foxglove/studio-datastores/layouts-local/.\n")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

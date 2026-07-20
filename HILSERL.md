@@ -260,8 +260,21 @@ file, no server and no network. Otherwise it falls back to app.foxglove.dev, ser
 the file from localhost with the CORS and HTTP Range support Foxglove needs.
 
 Recordings are plain files, so **you do not need to run the pipeline to iterate on
-the visualisation** — re-open any past episode as often as you like. Foxglove
-remembers your panel layout between sessions, so arrange it once.
+the visualisation** — re-open any past episode as often as you like.
+
+**Panels are set up for you.** Foxglove opens a file with whatever layout is
+currently selected, which on a fresh install points at topics we never publish (the
+stock `/depth`, `/left/image_rect` panels). So `view_foxglove.py` generates a layout
+from the topics actually in the episode and installs it as **"HIL-SERL Transitions"**
+— cameras and the grasp overlay down the left, reward/intervention plot and the
+numeric panels down the right. Add a second camera and it gets its own panel with no
+further work.
+
+Select it once from Foxglove's layout menu (top-left); it is remembered from then on.
+Installing is additive — existing layouts are never modified — and re-running updates
+it in place rather than piling up copies. `--no-layout` skips it. If a newly
+installed layout does not appear in the menu, restart Foxglove: it reads the local
+layout store at startup.
 
 Everything lands on one scrubbable timeline:
 
