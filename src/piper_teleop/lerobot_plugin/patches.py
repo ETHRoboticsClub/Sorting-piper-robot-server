@@ -34,6 +34,7 @@ def apply_lerobot_patches() -> None:
     _informative_learner_logging()
     _gamepad_pause(gm)
     _foxglove_episode_logging(gm)
+    _warm_start_replay_buffer()
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -186,6 +187,51 @@ def _gamepad_pause(gm) -> None:
     gm.RobotEnv.step = step
 
 
+def _warm_start_replay_buffer() -> None:
+    """Seed a fresh learner's replay buffer from previous runs' recordings.
+
+    Without this, every restart begins with an empty buffer and cannot learn until
+    ``online_step_before_learning`` new transitions arrive -- so short iteration
+    cycles throw away everything the robot has already done.
+
+    Hooks ``initialize_replay_buffer``, which the learner calls once at startup, and
+    fills the buffer it returns. Skipped when resuming (the buffer is restored from
+    the checkpoint) and when ``PIPER_WARM_START=0``.
+    """
+    import logging
+    import os
+
+    if os.environ.get("PIPER_WARM_START", "1") == "0":
+        logging.getLogger(__name__).info("[WARM START] disabled (PIPER_WARM_START=0) -- fresh buffer")
+        return
+
+    import lerobot.rl.learner as _learner
+
+    if getattr(_learner.initialize_replay_buffer, "_piper_warm_start", False):
+        return
+
+    _orig_init = _learner.initialize_replay_buffer
+
+    def initialize_replay_buffer(cfg, device: str, storage_device: str):
+        buffer = _orig_init(cfg, device, storage_device)
+        if getattr(cfg, "resume", False):
+            return buffer
+        try:
+            from .warm_start import warm_start
+
+            warm_start(buffer, list(cfg.policy.input_features.keys()))
+        except Exception as exc:  # noqa: BLE001 - a bad recording must not stop training
+            logging.getLogger(__name__).warning(
+                "[WARM START] failed (%s: %s) -- continuing with an empty buffer",
+                type(exc).__name__,
+                exc,
+            )
+        return buffer
+
+    initialize_replay_buffer._piper_warm_start = True
+    _learner.initialize_replay_buffer = initialize_replay_buffer
+
+
 def _tensorboard_writer():
     """A ``SummaryWriter`` for the learner, or None if tensorboard isn't usable.
 
@@ -275,8 +321,17 @@ def _informative_learner_logging() -> None:
 
                 online = getattr(self.data_mixer, "online_buffer", None)
                 if online is not None:
-                    cap = getattr(online, "capacity", None)
-                    parts.append(f"buffer {len(online)}{f'/{cap}' if cap else ''}")
+                    cap = getattr(online, "capacity", 0) or 0
+                    pct = f" {100.0 * len(online) / cap:.0f}%" if cap else ""
+                    parts.append(f"buffer {len(online)}/{cap}{pct}")
+                    try:  # memory is pre-allocated, so this is the run's real cost
+                        from .warm_start import buffer_bytes
+
+                        allocated = buffer_bytes(online)
+                        if allocated:
+                            parts.append(f"{allocated / 1e9:.2f}GB")
+                    except Exception:  # noqa: BLE001
+                        pass
                 offline = getattr(self.data_mixer, "offline_buffer", None)
                 if offline is not None:
                     parts.append(f"demos {len(offline)}")

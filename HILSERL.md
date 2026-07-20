@@ -37,6 +37,7 @@ launcher drops out of any env you already had active.
 ./scripts/start_hilserl.sh --config config/sac_piper.json  # seed from demos instead
 ./scripts/start_hilserl.sh --no-can --no-tb             # bus already up, no plots
 ./scripts/start_hilserl.sh --no-foxglove                # no live view (still records)
+./scripts/start_hilserl.sh --fresh                      # empty buffer, ignore past runs
 ```
 
 The camera check is the one that earns its keep: a configured-but-unplugged RealSense
@@ -212,9 +213,15 @@ disabled by default. The `_informative_learner_logging` patch drops that spam an
 prints instead:
 
 ```
-[LEARNER] step 1234 | 3.8 Hz | buffer 2456/15000 | loss_actor=-1.203 | loss_critic=0.4123 | ...
+[LEARNER] step 1234 | 3.8 Hz | buffer 2456/15000 16% | 2.95GB | loss_actor=-1.203 | ...
 [LEARNER] EPISODE done @ interaction 500 | reward 1 | intervention 45% (human)
 ```
+
+The buffer figure is transitions used / capacity, then the memory the buffer
+occupies. That memory is **pre-allocated at full capacity**, so it does not grow as
+the buffer fills — it is what the run costs from the start, and the number to watch
+when raising `online_buffer_capacity` (roughly 197 kB per transition with one 128²
+camera).
 
 Training lines come every `PIPER_LEARNER_LOG_S` seconds (default 10, e.g.
 `PIPER_LEARNER_LOG_S=30 python scripts/run_sac_learner.py ...`); episode lines come one
@@ -332,6 +339,37 @@ running while you scrub.
 
 (wandb also works — set `wandb.enable: true` — but viewing needs an account: offline
 runs have no local viewer, only `wandb sync` to wandb.ai or a self-hosted server.)
+
+### Warm start from previous runs (on by default)
+
+Restarting normally throws away everything the robot has done: the learner comes up
+with an empty buffer and cannot learn until `online_step_before_learning` fresh
+transitions arrive. So on startup it refills the replay buffer from **previous runs'
+episode recordings**, newest first, until the buffer is full or the recordings run
+out:
+
+```
+[WARM START] loaded 15000 transitions from 88 episode(s); buffer 15000/15000
+             (2.95 GB allocated, 197 kB/transition)
+```
+
+`--fresh` (or `PIPER_WARM_START=0`) starts empty instead — use it when past data
+would be misleading, e.g. after changing the reward, the task, or the camera setup.
+Resumed runs skip it, since the checkpoint already carries a buffer.
+
+The MCAP recordings are the source rather than learner checkpoints, for two reasons:
+they store the *processed* observation (128² images, the same 7-dim state and action
+the policy saw), so a replayed transition is exactly what the actor sent; and they
+exist for every run, whereas checkpoints are only written every `save_freq` (5000)
+optimization steps and so never appear during short sessions.
+
+Two invariants the loader has to respect, both of which corrupt the buffer silently
+if broken: transitions are added in **forward** order within an episode and the last
+one is flagged `done`, because `optimize_memory=True` reads `next_state` from index
+`i+1` rather than storing it; and every transition carries
+`complementary_info.discrete_penalty`, because `_initialize_storage` allocates that
+field from the **first** transition it sees — omit it and every later online
+transition's penalty is dropped.
 
 **Demos need `complementary_info.discrete_penalty`.** The actor attaches it to every
 online transition and the SAC discrete-critic loss adds it to the reward, so the
