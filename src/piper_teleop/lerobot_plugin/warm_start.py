@@ -58,6 +58,67 @@ def _decode_image(payload: dict) -> Any:
     return np.transpose(rgb.astype(np.float32) / 255.0, (2, 0, 1))
 
 
+def topics_of(mcap_path: str) -> set[str]:
+    from mcap.reader import make_reader
+
+    with open(mcap_path, "rb") as handle:
+        return {ch.topic for ch in make_reader(handle).get_summary().channels.values()}
+
+
+def validate_recording(mcap_path: str, features: dict[str, tuple]) -> tuple[bool, str]:
+    """Is this recording compatible with the policy's observation space?
+
+    Recordings accumulate across config changes -- a run made before a camera was
+    added, or at a different resolution, is not the same observation space and must
+    not be loaded. Silently skipping the mismatched *rows* (the earlier behaviour)
+    is worse than skipping the file: it quietly biases the buffer toward whichever
+    runs happened to match.
+
+    Checked cheaply from the summary first, then by decoding a single frame.
+    """
+    image_keys = {k.split(".")[-1]: tuple(shape) for k, shape in features.items() if "image" in k}
+    state_dim = next((int(shape[0]) for k, shape in features.items() if "image" not in k), None)
+
+    try:
+        topics = topics_of(mcap_path)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreadable ({type(exc).__name__})"
+
+    for required in ("/state", "/action", "/reward"):
+        if required not in topics:
+            return False, f"missing {required}"
+    missing = [name for name in image_keys if f"/camera/{name}" not in topics]
+    if missing:
+        return False, f"missing camera(s): {', '.join(sorted(missing))}"
+
+    # Shapes: a resolution or state-dim change silently corrupts the buffer.
+    import json
+
+    from mcap.reader import make_reader
+
+    checked_images: set[str] = set()
+    checked_state = state_dim is None
+    with open(mcap_path, "rb") as handle:
+        for _schema, channel, message in make_reader(handle).iter_messages():
+            if channel.topic == "/state" and not checked_state:
+                payload = json.loads(message.data)
+                found = len([k for k in payload if k.startswith("joint_")]) + ("gripper" in payload)
+                if found != state_dim:
+                    return False, f"state dim {found}, expected {state_dim}"
+                checked_state = True
+            elif channel.topic.startswith("/camera/"):
+                name = channel.topic.rsplit("/", 1)[-1]
+                if name in image_keys and name not in checked_images:
+                    got = _decode_image(json.loads(message.data)).shape
+                    if tuple(got) != image_keys[name]:
+                        return False, f"{name} is {tuple(got)}, expected {image_keys[name]}"
+                    checked_images.add(name)
+            if checked_state and len(checked_images) == len(image_keys):
+                return True, "ok"
+
+    return False, "no complete frame"
+
+
 def iter_transitions(mcap_path: str, state_keys: list[str]) -> Iterator[dict]:
     """Yield one dict per recorded step, in forward temporal order.
 
@@ -112,10 +173,17 @@ def iter_transitions(mcap_path: str, state_keys: list[str]) -> Iterator[dict]:
         }
 
 
-def warm_start(buffer, state_keys: list[str], root: str = DEFAULT_ROOT) -> tuple[int, int]:
-    """Fill ``buffer`` from past recordings, newest first. Returns (added, episodes)."""
+def warm_start(buffer, features: dict[str, tuple], root: str = DEFAULT_ROOT) -> tuple[int, int]:
+    """Fill ``buffer`` from past recordings, newest first. Returns (added, episodes).
+
+    Every recording is validated against the policy's observation space first;
+    incompatible ones are skipped whole, with the reason reported.
+    """
+    import collections
+
     import torch
 
+    state_keys = list(features)
     recordings = find_recordings(root)
     if not recordings:
         logger.info("[WARM START] no previous recordings under %s -- starting empty", root)
@@ -126,15 +194,23 @@ def warm_start(buffer, state_keys: list[str], root: str = DEFAULT_ROOT) -> tuple
 
     added = 0
     episodes = 0
+    rejected: collections.Counter = collections.Counter()
     for path in recordings:
         if len(buffer) >= buffer.capacity:
             break
+
+        ok, reason = validate_recording(path, features)
+        if not ok:
+            rejected[reason] += 1
+            continue
+
         try:
             transitions = list(iter_transitions(path, state_keys))
         except Exception as exc:  # noqa: BLE001 - a corrupt file must not stop the run
-            logger.warning("[WARM START] skipping %s (%s: %s)", path, type(exc).__name__, exc)
+            rejected[f"read error ({type(exc).__name__})"] += 1
             continue
         if not transitions:
+            rejected["no usable transitions"] += 1
             continue
 
         before = len(buffer)
@@ -147,8 +223,6 @@ def warm_start(buffer, state_keys: list[str], root: str = DEFAULT_ROOT) -> tuple
                 if name in image_keys
             }
             state[state_key] = torch.from_numpy(transition["state"]).unsqueeze(0)
-            if len(state) != len(state_keys):
-                continue  # recording lacks a camera this policy expects
             buffer.add(
                 state=state,
                 action=torch.from_numpy(transition["action"]).unsqueeze(0),
@@ -173,8 +247,30 @@ def warm_start(buffer, state_keys: list[str], root: str = DEFAULT_ROOT) -> tuple
             describe_memory(buffer),
         )
     else:
-        logger.info("[WARM START] found recordings but no usable transitions -- starting empty")
+        logger.info("[WARM START] no compatible recordings -- starting empty")
+    for reason, count in rejected.most_common():
+        logger.info("[WARM START] skipped %d recording(s): %s", count, reason)
     return added, episodes
+
+
+TRAIN_ROOT = os.path.join("outputs", "train")
+
+
+def find_latest_checkpoint(root: str = TRAIN_ROOT) -> str | None:
+    """Newest saved policy across previous runs, or None.
+
+    LeRobot writes ``<run>/checkpoints/<step>/pretrained_model`` with a ``last``
+    symlink. Note these only appear every ``save_freq`` optimization steps (5000 by
+    default), so short sessions produce none -- an empty result is normal, not an
+    error.
+    """
+    candidates = glob.glob(os.path.join(root, "*", "*", "checkpoints", "*", "pretrained_model"))
+    candidates = [c for c in candidates if os.path.isdir(c)]
+    if not candidates:
+        return None
+    # Resolve so the "last" symlink and its target do not both rank.
+    unique = {os.path.realpath(c) for c in candidates}
+    return max(unique, key=os.path.getmtime)
 
 
 def buffer_bytes(buffer) -> int:

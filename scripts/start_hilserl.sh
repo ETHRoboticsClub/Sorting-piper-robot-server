@@ -14,6 +14,7 @@
 #   --no-tb         skip tensorboard
 #   --no-foxglove   skip the live Foxglove view (recordings still written)
 #   --fresh         empty replay buffer (default: warm start from past recordings)
+#   --fresh-policy  random policy init (default: warm start from newest checkpoint)
 #   --check         run preflight checks and exit
 #
 # Optional env:
@@ -41,6 +42,7 @@ DO_CAN=1
 DO_TB=1
 DO_FG=1
 WARM_START=1
+WARM_POLICY=1
 CHECK_ONLY=0
 
 while [ $# -gt 0 ]; do
@@ -63,6 +65,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--fresh)
 		WARM_START=0
+		shift
+		;;
+	--fresh-policy)
+		WARM_POLICY=0
 		shift
 		;;
 	--check)
@@ -243,13 +249,13 @@ mkdir -p "$FG_DIR"
 wrap() { printf 'cd %q && source %q && conda activate %q && %s; echo; echo "[%s exited -- press enter to close]"; read -r _' \
 	"$REPO_ROOT" "$CONDA_SH" "$ENV_NAME" "$1" "$2"; }
 
-LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
+LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START PIPER_WARM_START_POLICY=$WARM_POLICY python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
 # The actor must not start before the learner is serving, or it fails to connect.
 # PIPER_FG_DIR is fixed here so the episode recordings land somewhere predictable.
 ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	until (exec 3<>/dev/tcp/127.0.0.1/$LEARNER_PORT) 2>/dev/null; do sleep 1; done; \
 	exec 3>&-; echo 'learner up, starting actor'; \
-	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT \
+	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT PIPER_WARM_START_POLICY=$WARM_POLICY \
 	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
 

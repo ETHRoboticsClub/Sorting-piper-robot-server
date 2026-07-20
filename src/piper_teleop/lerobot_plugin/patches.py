@@ -35,6 +35,7 @@ def apply_lerobot_patches() -> None:
     _gamepad_pause(gm)
     _foxglove_episode_logging(gm)
     _warm_start_replay_buffer()
+    _warm_start_policy_weights()
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -219,7 +220,8 @@ def _warm_start_replay_buffer() -> None:
         try:
             from .warm_start import warm_start
 
-            warm_start(buffer, list(cfg.policy.input_features.keys()))
+            features = {k: tuple(v.shape) for k, v in cfg.policy.input_features.items()}
+            warm_start(buffer, features)
         except Exception as exc:  # noqa: BLE001 - a bad recording must not stop training
             logging.getLogger(__name__).warning(
                 "[WARM START] failed (%s: %s) -- continuing with an empty buffer",
@@ -230,6 +232,68 @@ def _warm_start_replay_buffer() -> None:
 
     initialize_replay_buffer._piper_warm_start = True
     _learner.initialize_replay_buffer = initialize_replay_buffer
+
+
+def _warm_start_policy_weights() -> None:
+    """Start from the newest saved policy instead of a random init.
+
+    Reloading the buffer alone still leaves the *policy* random on every restart, so
+    the robot flails through the first minutes of each session relearning what it
+    already knew. Point ``pretrained_path`` at the newest checkpoint from a previous
+    run when the caller has not set one.
+
+    ``learner.py`` and ``actor.py`` both do ``from lerobot.policies import
+    make_policy``, binding by value, so the wrapper is rebound in each -- patching
+    the factory module alone would do nothing. Both are wrapped deliberately: the
+    actor otherwise runs a random policy until the learner's first weight push
+    (~50 s).
+
+    Disable with ``PIPER_WARM_START_POLICY=0``. Checkpoints only appear every
+    ``save_freq`` (5000) optimization steps, so finding none is normal.
+    """
+    import logging
+    import os
+
+    if os.environ.get("PIPER_WARM_START_POLICY", "1") == "0":
+        logging.getLogger(__name__).info(
+            "[WARM START] policy warm start disabled (PIPER_WARM_START_POLICY=0) -- random init"
+        )
+        return
+
+    import lerobot.policies as _policies
+
+    if getattr(_policies.make_policy, "_piper_warm_start", False):
+        return
+
+    _orig_make_policy = _policies.make_policy
+    log = logging.getLogger(__name__)
+
+    def make_policy(cfg, *args, **kwargs):
+        try:
+            if getattr(cfg, "pretrained_path", None) is None:
+                from .warm_start import find_latest_checkpoint
+
+                checkpoint = find_latest_checkpoint()
+                if checkpoint:
+                    cfg.pretrained_path = checkpoint
+                    log.info("[WARM START] policy from %s", checkpoint)
+                else:
+                    log.info(
+                        "[WARM START] no previous checkpoint found -- random init "
+                        "(checkpoints are written every save_freq steps)"
+                    )
+        except Exception as exc:  # noqa: BLE001 - never block policy construction
+            log.warning("[WARM START] policy warm start skipped (%s: %s)", type(exc).__name__, exc)
+        return _orig_make_policy(cfg, *args, **kwargs)
+
+    make_policy._piper_warm_start = True
+    for modname in ("lerobot.policies", "lerobot.rl.learner", "lerobot.rl.actor"):
+        try:
+            module = importlib.import_module(modname)
+        except Exception:  # noqa: BLE001
+            continue
+        if hasattr(module, "make_policy"):
+            module.make_policy = make_policy
 
 
 def _tensorboard_writer():

@@ -38,6 +38,7 @@ launcher drops out of any env you already had active.
 ./scripts/start_hilserl.sh --no-can --no-tb             # bus already up, no plots
 ./scripts/start_hilserl.sh --no-foxglove                # no live view (still records)
 ./scripts/start_hilserl.sh --fresh                      # empty buffer, ignore past runs
+./scripts/start_hilserl.sh --fresh-policy               # random policy init
 ```
 
 The camera check is the one that earns its keep: a configured-but-unplugged RealSense
@@ -354,8 +355,43 @@ out:
 ```
 
 `--fresh` (or `PIPER_WARM_START=0`) starts empty instead — use it when past data
-would be misleading, e.g. after changing the reward, the task, or the camera setup.
-Resumed runs skip it, since the checkpoint already carries a buffer.
+would be misleading, e.g. after changing the reward or the task. Resumed runs skip
+it, since the checkpoint already carries a buffer.
+
+**Recordings are validated before use.** They accumulate across config changes, and a
+run made before a camera was added, or at a different resolution, is a different
+observation space. Each file is checked against the policy's `input_features` —
+required topics present, image shapes and state dimension matching — and
+incompatible ones are skipped **whole**, with the reason reported:
+
+```
+[WARM START] skipped 11 recording(s): missing camera(s): topdown
+[WARM START] skipped 2 recording(s): wrist1 is (3, 128, 128), expected (3, 224, 224)
+```
+
+Skipping the whole file matters: dropping only the mismatched rows would quietly
+bias the buffer toward whichever runs happened to match, which is harder to notice
+than an empty buffer.
+
+### Warm start the policy (on by default)
+
+Reloading the buffer still leaves the *policy* randomly initialised on every restart,
+so the robot spends the first minutes of each session relearning what it already
+knew. The newest checkpoint from a previous run is therefore loaded into
+`pretrained_path` when you have not set one:
+
+```
+[WARM START] policy from outputs/train/2026-07-20/.../checkpoints/10000/pretrained_model
+```
+
+`--fresh-policy` (or `PIPER_WARM_START_POLICY=0`) forces a random init. Both the
+learner and the actor warm start, so the robot is not running a random policy for the
+~50 s until the learner's first weight push.
+
+**Checkpoints only appear every `save_freq` (5000) optimization steps**, so short
+sessions produce none and this logs "no previous checkpoint found" — normal, not an
+error. Warm-starting the buffer makes 5000 steps far easier to reach, since learning
+begins immediately instead of after the warm-up.
 
 The MCAP recordings are the source rather than learner checkpoints, for two reasons:
 they store the *processed* observation (128² images, the same 7-dim state and action
