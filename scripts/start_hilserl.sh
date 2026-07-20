@@ -255,7 +255,7 @@ $(printf '\033[1;36m==>\033[0m') Session started.
   Episode recordings (one .mcap per episode, written as each episode ends):
     $FG_DIR/
   Scrub one in Foxglove:
-    python scripts/view_foxglove.py            # newest episode
+    python scripts/view_foxglove.py            # newest episode (local Foxglove app)
     python scripts/view_foxglove.py --list     # everything recorded
 
   Gamepad:  Share = take over / release      Options = pause / resume

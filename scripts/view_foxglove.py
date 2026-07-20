@@ -1,17 +1,20 @@
 #!/usr/bin/env python
-"""Serve recorded episodes and open them in Foxglove.
+"""Open recorded episodes in Foxglove.
 
     python scripts/view_foxglove.py              # newest episode of the newest session
     python scripts/view_foxglove.py --list       # list what has been recorded
     python scripts/view_foxglove.py path/to/episode_0003.mcap
-    python scripts/view_foxglove.py --no-browser # just serve, print the URL
+    python scripts/view_foxglove.py --web        # force the browser app instead
 
-Foxglove's web app loads a log over HTTP, which needs two things a plain
-``http.server`` does not provide: permissive **CORS** (the page is served from
+Prefers the **local Foxglove desktop app**, which just opens the file -- no server,
+no browser, and it keeps working offline. Falls back to the web app at
+app.foxglove.dev when the desktop app is not installed.
+
+The web fallback has to serve the file over HTTP, which needs two things a plain
+``http.server`` does not provide: permissive **CORS** (the page comes from
 app.foxglove.dev, the file from localhost) and **Range** requests (Foxglove seeks
-within the file instead of downloading it whole). Both are implemented below.
-
-The server runs until you Ctrl+C it -- keep it alive while you are scrubbing.
+within the file rather than downloading it whole). Both are implemented below, and
+that server runs until you Ctrl+C it -- keep it alive while scrubbing.
 """
 
 from __future__ import annotations
@@ -29,6 +32,13 @@ from http.server import SimpleHTTPRequestHandler
 
 DEFAULT_ROOT = os.path.join("outputs", "foxglove")
 FOXGLOVE_APP = "https://app.foxglove.dev/~/view"
+
+_LAYOUT_HINT = """Suggested panels (Foxglove remembers your layout, so arrange once):
+  Image        /camera/wrist1        what the policy sees
+  Image        /grasp/overlay        wrist view + YOLO verdict
+  Plot         /reward.reward, /reward.episode_return, /control.value
+  Raw Messages /state, /action, /grasp
+"""
 
 
 class RangeCORSHandler(SimpleHTTPRequestHandler):
@@ -91,6 +101,32 @@ class RangeCORSHandler(SimpleHTTPRequestHandler):
         pass
 
 
+def find_desktop_app() -> str | None:
+    """Path to a local Foxglove desktop install, or None."""
+    import shutil
+
+    for name in ("foxglove-studio", "foxglove"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in ("/opt/Foxglove/foxglove-studio", "/usr/bin/foxglove-studio"):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def open_in_desktop(app: str, target: str) -> None:
+    """Hand the file to the desktop app and detach, so this script can exit."""
+    import subprocess
+
+    subprocess.Popen(  # noqa: S603
+        [app, target],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def find_episodes(root: str) -> list[str]:
     hits: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(root):
@@ -104,7 +140,8 @@ def main() -> int:
     ap.add_argument("--root", default=DEFAULT_ROOT, help=f"recording dir (default {DEFAULT_ROOT})")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--list", action="store_true", help="list recorded episodes and exit")
-    ap.add_argument("--no-browser", action="store_true", help="serve only; do not open a browser")
+    ap.add_argument("--web", action="store_true", help="use the browser app even if the desktop app exists")
+    ap.add_argument("--no-browser", action="store_true", help="web mode: serve only, do not open a browser")
     args = ap.parse_args()
 
     root = os.path.abspath(args.root)
@@ -130,6 +167,14 @@ def main() -> int:
         print(f"Not a file: {target}", file=sys.stderr)
         return 1
 
+    app = None if args.web else find_desktop_app()
+    if app:
+        open_in_desktop(app, target)
+        print(f"opening  {os.path.relpath(target, root)}")
+        print(f"in       {app}\n")
+        print(_LAYOUT_HINT)
+        return 0
+
     # Serve the recording root so other episodes are reachable without a restart.
     os.chdir(root)
     rel = posixpath.join(*os.path.relpath(target, root).split(os.sep))
@@ -146,8 +191,7 @@ def main() -> int:
             threading.Timer(0.5, lambda: webbrowser.open(view_url)).start()
             print("Opening Foxglove in your browser...")
         print("Ctrl+C to stop serving.\n")
-        print("Suggested layout: Image panels on /camera/* and /grasp/overlay, Plot on")
-        print("/reward.reward + /control.value, Raw Messages on /state and /action.\n")
+        print(_LAYOUT_HINT)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

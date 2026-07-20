@@ -249,10 +249,19 @@ one per episode, under `outputs/foxglove/<session>/episode_NNNN.mcap` (the path 
 printed when the actor starts and again as each file is closed).
 
 ```bash
-python scripts/view_foxglove.py            # newest episode, opens Foxglove in a browser
+python scripts/view_foxglove.py            # newest episode, in the local Foxglove app
 python scripts/view_foxglove.py --list     # everything recorded
 python scripts/view_foxglove.py outputs/foxglove/<session>/episode_0007.mcap
+python scripts/view_foxglove.py --web      # browser app instead (no desktop install)
 ```
+
+Uses the **local Foxglove desktop app** when one is installed — it just opens the
+file, no server and no network. Otherwise it falls back to app.foxglove.dev, serving
+the file from localhost with the CORS and HTTP Range support Foxglove needs.
+
+Recordings are plain files, so **you do not need to run the pipeline to iterate on
+the visualisation** — re-open any past episode as often as you like. Foxglove
+remembers your panel layout between sessions, so arrange it once.
 
 Everything lands on one scrubbable timeline:
 
