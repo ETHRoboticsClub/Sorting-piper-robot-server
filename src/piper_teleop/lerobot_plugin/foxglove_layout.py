@@ -161,6 +161,23 @@ def build_layout(topics: list[str]) -> dict:
     }
 
 
+#: Everything the logger publishes besides the per-camera image topics.
+BASE_TOPICS = ["/grasp/overlay", "/state", "/action", "/reward", "/control", "/grasp", "/episode"]
+
+
+def topics_from_config(config_path: str) -> list[str]:
+    """Topic list implied by an RL config.
+
+    Used for the **live** stream, where there is no recording to inspect yet: the
+    camera panels come from ``env.robot.cameras`` so the layout is right from the
+    first frame.
+    """
+    with open(config_path) as handle:
+        cfg = json.load(handle)
+    cameras = (cfg.get("env", {}).get("robot", {}) or {}).get("cameras", {}) or {}
+    return sorted([f"/camera/{name}" for name in cameras] + BASE_TOPICS)
+
+
 def topics_in(mcap_path: str) -> list[str]:
     from mcap.reader import make_reader
 
@@ -181,3 +198,23 @@ def install(layout: dict, target_dir: str | None = None) -> str:
     with open(path, "w") as handle:
         json.dump(layout, handle)
     return path
+
+
+def _main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Generate/install the HIL-SERL Foxglove layout")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--config", help="RL config json (topics inferred from env.robot.cameras)")
+    src.add_argument("--episode", help="recorded .mcap (topics read from the file)")
+    ap.add_argument("--dir", help="install dir (default: Foxglove's local layout store)")
+    args = ap.parse_args()
+
+    topics = topics_from_config(args.config) if args.config else topics_in(args.episode)
+    path = install(build_layout(topics), args.dir)
+    print(f'installed layout "{LAYOUT_NAME}" -> {path}')
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

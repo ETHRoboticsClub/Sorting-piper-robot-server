@@ -26,14 +26,17 @@ libstdc++ lacks a symbol scipy needs); it applies automatically on
 ```
 
 Runs preflight (conda env, config, CAN bring-up, **every configured camera actually
-attached**, gamepad) and then opens three terminals: learner, actor, and tensorboard.
-The actor waits on the learner's gRPC port, so start-up ordering takes care of itself.
-No conda activation needed beforehand — each terminal activates the env itself.
+attached**, gamepad, Foxglove) and then opens three terminals — learner, actor,
+tensorboard — plus Foxglove on the live stream. The actor waits on the learner's gRPC
+port and Foxglove waits on the actor's, so start-up ordering takes care of itself. No
+conda activation needed beforehand — each terminal activates the env itself, and the
+launcher drops out of any env you already had active.
 
 ```bash
 ./scripts/start_hilserl.sh --check                      # preflight only, launch nothing
 ./scripts/start_hilserl.sh --config config/sac_piper.json  # seed from demos instead
 ./scripts/start_hilserl.sh --no-can --no-tb             # bus already up, no plots
+./scripts/start_hilserl.sh --no-foxglove                # no live view (still records)
 ```
 
 The camera check is the one that earns its keep: a configured-but-unplugged RealSense
@@ -241,12 +244,23 @@ disable with `PIPER_TB=0`). Scalars: `train/loss_*`, `train/optimization_hz`,
 is it succeeding, and does it need you less over time. SAC's `loss_critic` is not
 monotonic and tells you little about progress.
 
-### Episode replay (Foxglove)
+### Transition view (Foxglove)
 
-Tensorboard answers "is training progressing over hours". To ask "what actually
-happened in *that* episode", every transition is also written to an **MCAP** file —
-one per episode, under `outputs/foxglove/<session>/episode_NNNN.mcap` (the path is
-printed when the actor starts and again as each file is closed).
+Tensorboard answers "is training progressing over hours". To see what actually
+happened on a given step, every transition also goes to Foxglove — **live while the
+robot runs**, and **recorded** so you can scrub it afterwards. Both run at once from
+the same messages; `start_hilserl.sh` sets up both.
+
+**Live.** The actor serves a Foxglove WebSocket on `ws://localhost:8765`
+(`FG_PORT`), and the launcher opens Foxglove pointed at it once the port is bound.
+Live is a rolling buffer: it shows the present and a few seconds back, but cannot
+jump to an earlier episode — that is what the recordings are for. Connect by hand
+with **Open connection → Foxglove WebSocket → `ws://localhost:8765`**.
+`--no-foxglove` skips the viewer; `PIPER_FG_LIVE=0` disables the server itself.
+
+**Recorded.** Every transition is also written to an **MCAP** file — one per episode,
+under `outputs/foxglove/<session>/episode_NNNN.mcap` (the path is printed when the
+actor starts and again as each file is closed).
 
 ```bash
 python scripts/view_foxglove.py            # newest episode, in the local Foxglove app
@@ -270,11 +284,14 @@ from the topics actually in the episode and installs it as **"HIL-SERL Transitio
 numeric panels down the right. Add a second camera and it gets its own panel with no
 further work.
 
-Select it once from Foxglove's layout menu (top-left); it is remembered from then on.
-Installing is additive — existing layouts are never modified — and re-running updates
-it in place rather than piling up copies. `--no-layout` skips it. If a newly
-installed layout does not appear in the menu, restart Foxglove: it reads the local
-layout store at startup.
+Select it once from Foxglove's layout menu (top-left); it is remembered from then on,
+and it serves the live stream and the recordings equally since the topics are
+identical. `start_hilserl.sh` installs it from the config's cameras (so it is right
+before a single frame exists); `view_foxglove.py` installs it from the episode you
+are opening. Installing is additive — existing layouts are never modified — and
+re-running updates it in place rather than piling up copies. `--no-layout` skips it.
+If a newly installed layout does not appear in the menu, restart Foxglove: it reads
+the local layout store at startup.
 
 Everything lands on one scrubbable timeline:
 
@@ -292,12 +309,22 @@ Only the cameras actually in the observation appear — with the default wrist-o
 config that is `wrist1` alone; add a camera to `env.robot.cameras` and it shows up
 here too.
 
-**Overhead.** The control loop only pays a dict copy and a queue put; JPEG encoding
-and file I/O run on a background thread behind a bounded queue that *drops* frames
-when full, so a slow disk can never pace the robot. Logging is deliberately lossy
-under pressure rather than applying backpressure to the control loop. Tune with
-`PIPER_FG_EVERY=N` (log every Nth step), `PIPER_FG_QUALITY` (JPEG quality, default
-80), `PIPER_FG_MAXQ` (queue depth); `PIPER_FG=0` disables it entirely.
+**Overhead.** The control loop only pays a dict copy and a queue put; JPEG encoding,
+file I/O and the live publish all run on one background thread behind a bounded queue
+that *drops* frames when full, so neither a slow disk nor a slow viewer can pace the
+robot. This is deliberately lossy under pressure rather than applying backpressure to
+the control loop. With two cameras you are encoding two JPEGs per step — if the
+actor's FPS dips, `PIPER_FG_EVERY=2` halves that.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `PIPER_FG` | `1` | `0` disables Foxglove output entirely |
+| `PIPER_FG_LIVE` | `1` | `0` records only, no live server |
+| `PIPER_FG_PORT` | `8765` | live WebSocket port |
+| `PIPER_FG_EVERY` | `1` | log every Nth step |
+| `PIPER_FG_QUALITY` | `80` | JPEG quality |
+| `PIPER_FG_MAXQ` | `64` | queue depth before frames drop |
+| `PIPER_FG_DIR` | `outputs/foxglove/<session>` | recording directory |
 
 `view_foxglove.py` serves the file to app.foxglove.dev over localhost, implementing
 the CORS and HTTP Range support Foxglove needs and `http.server` lacks. Keep it

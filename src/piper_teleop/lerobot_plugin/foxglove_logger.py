@@ -106,6 +106,10 @@ class FoxgloveEpisodeLogger:
         self._writer = None
         self._stream = None
         self._channels: dict[str, int] = {}
+        self._live_server = None
+        self._live_channels: dict[str, Any] = {}
+        self._live = os.environ.get("PIPER_FG_LIVE", "1") != "0"
+        self._live_port = int(os.environ.get("PIPER_FG_PORT", "8765"))
         self._episode = 0
         self._step = 0
         self._return = 0.0
@@ -120,6 +124,18 @@ class FoxgloveEpisodeLogger:
         self.root = root or os.environ.get("PIPER_FG_DIR") or os.path.join("outputs", "foxglove", session)
         os.makedirs(self.root, exist_ok=True)
         logger.info("[FOXGLOVE] logging episodes to %s", os.path.abspath(self.root))
+
+        if self._live:
+            try:
+                import foxglove
+
+                self._live_server = foxglove.start_server(
+                    name="piper-hilserl", host="127.0.0.1", port=self._live_port
+                )
+                logger.info("[FOXGLOVE] live stream on ws://127.0.0.1:%d", self._live_port)
+            except Exception as exc:  # noqa: BLE001 - live viz is never worth failing a run
+                logger.warning("[FOXGLOVE] live stream unavailable (%s: %s)", type(exc).__name__, exc)
+                self._live = False
 
         self._thread = threading.Thread(target=self._run, name="foxglove-mcap", daemon=True)
         self._thread.start()
@@ -188,6 +204,12 @@ class FoxgloveEpisodeLogger:
         self._submit(("stop", None, None))
         if self._thread is not None:
             self._thread.join(timeout=10)
+        if self._live_server is not None:
+            try:
+                self._live_server.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._live_server = None
         if self._dropped:
             logger.warning("[FOXGLOVE] dropped %d frames (writer behind)", self._dropped)
 
@@ -250,16 +272,50 @@ class FoxgloveEpisodeLogger:
             )
         return self._channels[topic]
 
+    def _live_channel(self, topic: str, schema_name: str, schema: dict):
+        """Cached live channel; None when live streaming is off or unavailable."""
+        if not self._live:
+            return None
+        if topic not in self._live_channels:
+            try:
+                import foxglove
+                from foxglove import Channel, Schema
+
+                self._live_channels[topic] = Channel(
+                    topic,
+                    schema=Schema(
+                        name=schema_name, encoding="jsonschema", data=json.dumps(schema).encode()
+                    ),
+                    message_encoding="json",
+                )
+                del foxglove
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[FOXGLOVE] live channel %s failed: %s", topic, exc)
+                self._live_channels[topic] = None
+        return self._live_channels[topic]
+
+    def _emit(self, topic: str, data: bytes, stamp_ns: int, schema_name: str, schema: dict) -> None:
+        """Send one already-serialised message to both sinks.
+
+        The MCAP writer only exists between ``start_episode`` and ``end_episode``;
+        the live stream is always on, so a viewer attached between episodes (or
+        before the first one) still sees data.
+        """
+        if self._writer is not None:
+            cid = self._channel(topic, schema_name, schema)
+            self._writer.add_message(
+                channel_id=cid, log_time=stamp_ns, publish_time=stamp_ns, data=data
+            )
+        channel = self._live_channel(topic, schema_name, schema)
+        if channel is not None:
+            try:
+                channel.log(data, log_time=stamp_ns)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[FOXGLOVE] live publish on %s failed: %s", topic, exc)
+
     def _publish(self, topic: str, payload: dict, stamp_ns: int, schema_name: str | None = None) -> None:
-        if self._writer is None:
-            return
-        cid = self._channel(topic, schema_name or topic.strip("/").replace("/", "_"), {"type": "object"})
-        self._writer.add_message(
-            channel_id=cid,
-            log_time=stamp_ns,
-            publish_time=stamp_ns,
-            data=json.dumps(payload).encode(),
-        )
+        name = schema_name or topic.strip("/").replace("/", "_")
+        self._emit(topic, json.dumps(payload).encode(), stamp_ns, name, {"type": "object"})
 
     def _publish_image(self, topic: str, rgb, stamp_ns: int, frame_id: str) -> None:
         import cv2
@@ -269,24 +325,19 @@ class FoxgloveEpisodeLogger:
         )
         if not ok:
             return
-        cid = self._channel(topic, "foxglove.CompressedImage", _IMAGE_SCHEMA)
-        self._writer.add_message(
-            channel_id=cid,
-            log_time=stamp_ns,
-            publish_time=stamp_ns,
-            data=json.dumps(
-                {
-                    "timestamp": {"sec": stamp_ns // 1_000_000_000, "nsec": stamp_ns % 1_000_000_000},
-                    "frame_id": frame_id,
-                    "data": base64.b64encode(buf.tobytes()).decode("ascii"),
-                    "format": "jpeg",
-                }
-            ).encode(),
-        )
+        payload = json.dumps(
+            {
+                "timestamp": {"sec": stamp_ns // 1_000_000_000, "nsec": stamp_ns % 1_000_000_000},
+                "frame_id": frame_id,
+                "data": base64.b64encode(buf.tobytes()).decode("ascii"),
+                "format": "jpeg",
+            }
+        ).encode()
+        self._emit(topic, payload, stamp_ns, "foxglove.CompressedImage", _IMAGE_SCHEMA)
 
     def _write_step(self, s: dict) -> None:
-        if self._writer is None:  # transitions before the first reset
-            return
+        # No early return on a missing MCAP writer: _emit() still streams live, so a
+        # viewer attached between episodes keeps receiving data.
         t = s["t"]
         info = s["info"]
 

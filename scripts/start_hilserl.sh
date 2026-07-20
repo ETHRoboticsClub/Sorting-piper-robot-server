@@ -12,12 +12,14 @@
 #   --config PATH   RL config                 (default config/sac_piper_fresh.json)
 #   --no-can        skip CAN bring-up (already up / no robot)
 #   --no-tb         skip tensorboard
+#   --no-foxglove   skip the live Foxglove view (recordings still written)
 #   --check         run preflight checks and exit
 #
 # Optional env:
 #   ENV_NAME    conda env            default piper_hilserl_rl
 #   CAN_NAME    CAN interface        default left_piper
 #   TB_PORT     tensorboard port     default 6006
+#   FG_PORT     foxglove live port   default 8765
 #   LEARNER_PORT  learner gRPC port  default 50051
 
 set -u
@@ -31,9 +33,12 @@ TB_PORT="${TB_PORT:-6006}"
 LEARNER_PORT="${LEARNER_PORT:-50051}"
 TB_LOGDIR="outputs/tensorboard"
 
+FG_PORT="${FG_PORT:-8765}"
+
 CONFIG="config/sac_piper_fresh.json"
 DO_CAN=1
 DO_TB=1
+DO_FG=1
 CHECK_ONLY=0
 
 while [ $# -gt 0 ]; do
@@ -48,6 +53,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--no-tb)
 		DO_TB=0
+		shift
+		;;
+	--no-foxglove)
+		DO_FG=0
 		shift
 		;;
 	--check)
@@ -184,6 +193,28 @@ MISSING)
 *) warn "camera check skipped (${CAM_MSG#SKIP|})" ;;
 esac
 
+# --- foxglove ---------------------------------------------------------------
+FOXGLOVE_BIN=""
+if [ "$DO_FG" -eq 1 ]; then
+	for f in foxglove-studio foxglove /opt/Foxglove/foxglove-studio; do
+		command -v "$f" >/dev/null 2>&1 && {
+			FOXGLOVE_BIN="$f"
+			break
+		}
+		[ -x "$f" ] && {
+			FOXGLOVE_BIN="$f"
+			break
+		}
+	done
+	if [ -n "$FOXGLOVE_BIN" ]; then
+		ok "foxglove: $FOXGLOVE_BIN (live on ws://localhost:$FG_PORT)"
+	else
+		warn "Foxglove not installed -- live view skipped; recordings still written"
+	fi
+else
+	warn "Foxglove skipped (--no-foxglove)"
+fi
+
 # --- gamepad ----------------------------------------------------------------
 if ls /dev/input/js* >/dev/null 2>&1; then
 	ok "gamepad: $(ls /dev/input/js* | tr '\n' ' ')"
@@ -212,8 +243,17 @@ LEARNER_CMD="$(wrap "python scripts/run_sac_learner.py --config_path $CONFIG" le
 ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	until (exec 3<>/dev/tcp/127.0.0.1/$LEARNER_PORT) 2>/dev/null; do sleep 1; done; \
 	exec 3>&-; echo 'learner up, starting actor'; \
-	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
+	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT \
+	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
+
+# Install a layout whose panels match this config's cameras, so the live stream
+# comes up already wired instead of showing whatever layout was last selected.
+if [ "$DO_FG" -eq 1 ]; then
+	python -m piper_teleop.lerobot_plugin.foxglove_layout --config "$CONFIG" >/dev/null 2>&1 &&
+		ok "Foxglove layout installed (\"HIL-SERL Transitions\")" ||
+		warn "could not install the Foxglove layout"
+fi
 
 launch() { # launch <title> <command>
 	case "$TERM_EMU" in
@@ -242,6 +282,23 @@ if [ "$DO_TB" -eq 1 ]; then
 	launch "hilserl-tensorboard" "$TB_CMD"
 fi
 
+# Foxglove connects to the actor's live server, so give the actor a moment to
+# bind the port -- it starts only after the learner is up.
+if [ "$DO_FG" -eq 1 ] && [ -n "$FOXGLOVE_BIN" ]; then
+	say "Opening Foxglove on ws://localhost:$FG_PORT (live)"
+	(
+		for _ in $(seq 1 60); do
+			(exec 3<>/dev/tcp/127.0.0.1/"$FG_PORT") 2>/dev/null && {
+				exec 3>&-
+				break
+			}
+			sleep 1
+		done
+		"$FOXGLOVE_BIN" "foxglove://open?ds=foxglove-websocket&ds.url=ws%3A%2F%2Flocalhost%3A$FG_PORT" \
+			>/dev/null 2>&1 &
+	) &
+fi
+
 [ -z "$TERM_EMU" ] && say "tmux session 'hilserl' started -- attach with: tmux attach -t hilserl"
 
 cat <<EOF
@@ -252,11 +309,16 @@ $(printf '\033[1;36m==>\033[0m') Session started.
   actor        drives the robot       (episode reward + intervention rate)
   tensorboard  http://localhost:$TB_PORT   (watch episode/reward, episode/intervention_rate)
 
+  foxglove     live view              (ws://localhost:$FG_PORT, opens once the actor binds)
+
+  Live shows the present; recordings let you scrub the past. Both run together.
   Episode recordings (one .mcap per episode, written as each episode ends):
     $FG_DIR/
-  Scrub one in Foxglove:
+  Replay one afterwards:
     python scripts/view_foxglove.py            # newest episode (local Foxglove app)
     python scripts/view_foxglove.py --list     # everything recorded
+
+  Pick the "HIL-SERL Transitions" layout once from Foxglove's layout menu.
 
   Gamepad:  Share = take over / release      Options = pause / resume
             Square = success                 Triangle = fail
