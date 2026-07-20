@@ -36,6 +36,7 @@ def apply_lerobot_patches() -> None:
     _foxglove_episode_logging(gm)
     _warm_start_replay_buffer()
     _warm_start_policy_weights()
+    _skip_replay_buffer_dump()
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -294,6 +295,49 @@ def _warm_start_policy_weights() -> None:
             continue
         if hasattr(module, "make_policy"):
             module.make_policy = make_policy
+
+
+def _skip_replay_buffer_dump() -> None:
+    """Don't rewrite the whole replay buffer to disk on every checkpoint.
+
+    ``save_training_checkpoint`` rmtree's and re-exports the entire buffer as a
+    LeRobot dataset, inline in the training loop. Measured here: ~8.3 s per 2000
+    transitions, so ~62 s and ~320 MB for a full 15k buffer -- roughly 5% overhead at
+    ``save_freq: 5000`` but ~23% at 1000, which is what makes frequent checkpoints
+    impractical. LeRobot marks it temporary itself ("TODO : temporary save replay
+    buffer here, remove later when on the robot").
+
+    It is also now redundant: warm start rebuilds the buffer from the MCAP
+    recordings, which are written continuously rather than only at checkpoints.
+
+    The one thing this gives up is ``resume: true``, which restores the buffer from
+    that export. Set ``PIPER_SAVE_BUFFER=1`` to keep the old behaviour if you need it.
+    """
+    import logging
+    import os
+
+    if os.environ.get("PIPER_SAVE_BUFFER", "0") == "1":
+        return
+
+    from lerobot.rl.buffer import ReplayBuffer
+
+    if getattr(ReplayBuffer.to_lerobot_dataset, "_piper_skipped", False):
+        return
+
+    log = logging.getLogger(__name__)
+    state = {"warned": False}
+
+    def to_lerobot_dataset(self, *args, **kwargs):
+        if not state["warned"]:
+            state["warned"] = True
+            log.info(
+                "[CHECKPOINT] skipping the replay-buffer export (~62 s per full buffer); "
+                "warm start rebuilds it from the recordings. PIPER_SAVE_BUFFER=1 to keep it."
+            )
+        return None
+
+    to_lerobot_dataset._piper_skipped = True
+    ReplayBuffer.to_lerobot_dataset = to_lerobot_dataset
 
 
 def _tensorboard_writer():

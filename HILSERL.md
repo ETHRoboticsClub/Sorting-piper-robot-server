@@ -388,10 +388,22 @@ knew. The newest checkpoint from a previous run is therefore loaded into
 learner and the actor warm start, so the robot is not running a random policy for the
 ~50 s until the learner's first weight push.
 
-**Checkpoints only appear every `save_freq` (5000) optimization steps**, so short
-sessions produce none and this logs "no previous checkpoint found" — normal, not an
-error. Warm-starting the buffer makes 5000 steps far easier to reach, since learning
-begins immediately instead of after the warm-up.
+Checkpoints appear every `save_freq` optimization steps — **1000**, about 4-5 minutes
+at 3-4 Hz, so an iteration cycle produces several. Until the first one exists this
+logs "no previous checkpoint found", which is normal rather than an error.
+
+`save_freq` used to be 5000 (~22 min), which no short session ever reached. Lowering
+it required also dropping the replay-buffer export: `save_training_checkpoint`
+rmtree's and re-exports the whole buffer as a dataset, inline in the training loop,
+measured at ~8.3 s per 2000 transitions — so ~62 s and ~320 MB for a full 15k buffer.
+That is ~5% overhead at 5000 steps but **~23% at 1000**, which is what made frequent
+checkpoints impractical. LeRobot marks that export temporary itself, and warm start
+has made it redundant, since the MCAP recordings are written continuously rather than
+only at checkpoints. Checkpoints are now just the policy and training state.
+
+The one thing this gives up is `resume: true`, which restores the buffer from that
+export; warm start covers the same ground from recordings. `PIPER_SAVE_BUFFER=1`
+restores the old behaviour if you need a genuine resume.
 
 The MCAP recordings are the source rather than learner checkpoints, for two reasons:
 they store the *processed* observation (128² images, the same 7-dim state and action
