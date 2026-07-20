@@ -97,9 +97,29 @@ say "Preflight"
 CONDA_SH="$(find_conda_sh)" || die "conda not found (looked at \$CONDA_EXE, ~/miniconda3, ~/anaconda3, ~/miniforge3, /opt/conda)"
 ok "conda: $CONDA_SH"
 
+# Conda's hook scripts are not `set -u` clean -- ruby_deactivate.sh tests
+# "$ZSH_VERSION", which is unbound under bash and therefore fatal with -u. Those
+# hooks run whenever an env is activated *on top of itself*, so launching from an
+# already-activated shell used to abort here with no message at all. Disable -u
+# for all conda work, and start from base so an inherited env cannot leak its
+# LD_LIBRARY_PATH into every child terminal we spawn.
+set +u
 # shellcheck disable=SC1090
 source "$CONDA_SH"
-conda activate "$ENV_NAME" 2>/dev/null || die "conda env '$ENV_NAME' not found (create it, or set ENV_NAME=...)"
+
+guard=0
+while [ "${CONDA_SHLVL:-0}" -gt 0 ] && [ "$guard" -lt 10 ]; do
+	conda deactivate >/dev/null 2>&1 || break
+	guard=$((guard + 1))
+done
+[ "$guard" -gt 0 ] && deactivated=1 || deactivated=0
+
+conda activate "$ENV_NAME" 2>/dev/null
+activated=$?
+set -u
+
+[ "$activated" -eq 0 ] || die "conda env '$ENV_NAME' not found (create it, or set ENV_NAME=...)"
+[ "$deactivated" -eq 1 ] && ok "left the pre-activated env first (starting from base)"
 ok "env: $ENV_NAME ($(python -V 2>&1))"
 
 [ -f "$CONFIG" ] || die "config not found: $CONFIG"
