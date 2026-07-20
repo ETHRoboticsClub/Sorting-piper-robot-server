@@ -6,7 +6,7 @@ Arm_IK, 6-DOF EE control, persistent target, boolean gripper, pyav, and the 6-DO
 action space), executes the policy, collects transitions for the learner, and lets
 the human intervene with the gamepad (toggle Share). Start the learner first.
 
-    ./scripts/restart-can
+    bash scripts/restart_can.sh
     conda activate piper_hilserl_rl
     python scripts/run_sac_actor.py --config_path config/sac_piper.json
 """

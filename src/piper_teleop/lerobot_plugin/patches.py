@@ -33,6 +33,7 @@ def apply_lerobot_patches() -> None:
     _reset_intervention_each_episode()
     _informative_learner_logging()
     _gamepad_pause(gm)
+    _foxglove_episode_logging(gm)
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -63,6 +64,86 @@ def _patch_6dof_action_space(gm) -> None:
         )
 
     gm.RobotEnv._setup_spaces = _setup_spaces_6dof
+
+
+def _foxglove_episode_logging(gm) -> None:
+    """Record every environment transition to a per-episode MCAP file for Foxglove.
+
+    Hooks the two functions that bracket a rollout: ``step_env_and_process_transition``
+    (which returns the fully processed transition -- observation, executed action,
+    reward, info) and ``reset_and_build_transition`` (episode boundary).
+
+    ``actor.py`` does ``from .gym_manipulator import step_env_and_process_transition``,
+    binding these **by value**, so patching the ``gym_manipulator`` module alone has no
+    effect on the actor -- the same trap ``_force_pyav_video_backend`` handles. Rebind
+    in every module the names landed in.
+
+    Only runs where an env actually exists (the actor); the learner never calls these.
+    """
+    import atexit
+    import logging
+    import os
+
+    if os.environ.get("PIPER_FG", "1") == "0":
+        return
+    if getattr(gm.step_env_and_process_transition, "_piper_foxglove", False):
+        return
+
+    try:
+        from .foxglove_logger import FoxgloveEpisodeLogger
+    except Exception as exc:  # noqa: BLE001 - mcap is optional
+        logging.getLogger(__name__).info("[FOXGLOVE] disabled (%s)", exc)
+        return
+
+    from lerobot.types import TransitionKey
+
+    recorder = FoxgloveEpisodeLogger()
+    if not recorder.enabled:
+        return
+
+    _orig_step = gm.step_env_and_process_transition
+    _orig_reset = gm.reset_and_build_transition
+
+    def step_env_and_process_transition(env, transition, action, env_processor, action_processor):
+        new_transition = _orig_step(env, transition, action, env_processor, action_processor)
+        try:
+            complementary = new_transition.get(TransitionKey.COMPLEMENTARY_DATA) or {}
+            recorder.log_transition(
+                observation=new_transition.get(TransitionKey.OBSERVATION),
+                # the action actually executed -- the teleop one during an intervention
+                action=complementary.get("teleop_action", action),
+                reward=new_transition.get(TransitionKey.REWARD, 0.0),
+                info=new_transition.get(TransitionKey.INFO),
+                done=bool(new_transition.get(TransitionKey.DONE, False))
+                or bool(new_transition.get(TransitionKey.TRUNCATED, False)),
+            )
+        except Exception as exc:  # noqa: BLE001 - never let visualisation break a rollout
+            logging.getLogger(__name__).debug("[FOXGLOVE] skipped a transition: %s", exc)
+        return new_transition
+
+    def reset_and_build_transition(env, env_processor, action_processor):
+        recorder.end_episode()
+        result = _orig_reset(env, env_processor, action_processor)
+        try:
+            recorder.start_episode({"started_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S")})
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+
+    step_env_and_process_transition._piper_foxglove = True
+    reset_and_build_transition._piper_foxglove = True
+
+    for modname in ("lerobot.rl.gym_manipulator", "lerobot.rl.actor"):
+        try:
+            module = importlib.import_module(modname)
+        except Exception:  # noqa: BLE001
+            continue
+        if hasattr(module, "step_env_and_process_transition"):
+            module.step_env_and_process_transition = step_env_and_process_transition
+        if hasattr(module, "reset_and_build_transition"):
+            module.reset_and_build_transition = reset_and_build_transition
+
+    atexit.register(recorder.close)
 
 
 def _gamepad_pause(gm) -> None:

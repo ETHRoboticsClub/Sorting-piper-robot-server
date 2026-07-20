@@ -241,6 +241,46 @@ disable with `PIPER_TB=0`). Scalars: `train/loss_*`, `train/optimization_hz`,
 is it succeeding, and does it need you less over time. SAC's `loss_critic` is not
 monotonic and tells you little about progress.
 
+### Episode replay (Foxglove)
+
+Tensorboard answers "is training progressing over hours". To ask "what actually
+happened in *that* episode", every transition is also written to an **MCAP** file —
+one per episode, under `outputs/foxglove/<session>/episode_NNNN.mcap` (the path is
+printed when the actor starts and again as each file is closed).
+
+```bash
+python scripts/view_foxglove.py            # newest episode, opens Foxglove in a browser
+python scripts/view_foxglove.py --list     # everything recorded
+python scripts/view_foxglove.py outputs/foxglove/<session>/episode_0007.mcap
+```
+
+Everything lands on one scrubbable timeline:
+
+| Topic | Contents |
+|-------|----------|
+| `/camera/<name>` | one image stream per camera in the observation |
+| `/grasp/overlay` | wrist view with the YOLO verdict burned in (green = success) |
+| `/state` | `joint_0..N` + `gripper` |
+| `/action` | executed `dx,dy,dz,wx,wy,wz,gripper` — the *teleop* action during an intervention |
+| `/reward` | step reward + running episode return |
+| `/control` | `is_intervention` (plot `value` for a policy-vs-human band) |
+| `/grasp` | YOLO class / confidence / success, when the check ran |
+
+Only the cameras actually in the observation appear — with the default wrist-only
+config that is `wrist1` alone; add a camera to `env.robot.cameras` and it shows up
+here too.
+
+**Overhead.** The control loop only pays a dict copy and a queue put; JPEG encoding
+and file I/O run on a background thread behind a bounded queue that *drops* frames
+when full, so a slow disk can never pace the robot. Logging is deliberately lossy
+under pressure rather than applying backpressure to the control loop. Tune with
+`PIPER_FG_EVERY=N` (log every Nth step), `PIPER_FG_QUALITY` (JPEG quality, default
+80), `PIPER_FG_MAXQ` (queue depth); `PIPER_FG=0` disables it entirely.
+
+`view_foxglove.py` serves the file to app.foxglove.dev over localhost, implementing
+the CORS and HTTP Range support Foxglove needs and `http.server` lacks. Keep it
+running while you scrub.
+
 (wandb also works — set `wandb.enable: true` — but viewing needs an account: offline
 runs have no local viewer, only `wandb sync` to wandb.ai or a self-hosted server.)
 

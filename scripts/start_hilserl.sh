@@ -178,6 +178,8 @@ fi
 
 # --- launch -----------------------------------------------------------------
 mkdir -p "$TB_LOGDIR"
+FG_DIR="outputs/foxglove/$(date +%Y-%m-%d_%H-%M-%S)"
+mkdir -p "$FG_DIR"
 
 # Each pane: enter the repo, activate the env, run, then stay open so a crash
 # is readable instead of vanishing with the window.
@@ -186,10 +188,11 @@ wrap() { printf 'cd %q && source %q && conda activate %q && %s; echo; echo "[%s 
 
 LEARNER_CMD="$(wrap "python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
 # The actor must not start before the learner is serving, or it fails to connect.
+# PIPER_FG_DIR is fixed here so the episode recordings land somewhere predictable.
 ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	until (exec 3<>/dev/tcp/127.0.0.1/$LEARNER_PORT) 2>/dev/null; do sleep 1; done; \
 	exec 3>&-; echo 'learner up, starting actor'; \
-	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
+	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
 
 launch() { # launch <title> <command>
@@ -228,6 +231,12 @@ $(printf '\033[1;36m==>\033[0m') Session started.
   learner      training + logs        (step / losses / buffer every 10s)
   actor        drives the robot       (episode reward + intervention rate)
   tensorboard  http://localhost:$TB_PORT   (watch episode/reward, episode/intervention_rate)
+
+  Episode recordings (one .mcap per episode, written as each episode ends):
+    $FG_DIR/
+  Scrub one in Foxglove:
+    python scripts/view_foxglove.py            # newest episode
+    python scripts/view_foxglove.py --list     # everything recorded
 
   Gamepad:  Share = take over / release      Options = pause / resume
             Square = success                 Triangle = fail
