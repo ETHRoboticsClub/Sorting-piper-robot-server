@@ -54,12 +54,17 @@ class PiperGamepad6Dof(Teleoperator):
     config_class = PiperGamepad6DofConfig
     name = "piper_gamepad_6dof"
 
+    #: The connected device, so ``patches.py`` can reach it from ``RobotEnv.step``
+    #: (which holds no teleoperator reference). One gamepad per process.
+    _active: "PiperGamepad6Dof | None" = None
+
     def __init__(self, config: PiperGamepad6DofConfig):
         super().__init__(config)
         self.config = config
         self._joystick = None
         self._intervention = False
         self._episode_end: str | None = None
+        self._paused = False
 
     @property
     def action_features(self) -> dict:
@@ -85,6 +90,7 @@ class PiperGamepad6Dof(Teleoperator):
             raise RuntimeError("No gamepad detected. Connect a controller and retry.")
         self._joystick = pygame.joystick.Joystick(0)
         self._joystick.init()
+        type(self)._active = self
         logger.info("Initialized 6-DOF gamepad: %s", self._joystick.get_name())
 
     @property
@@ -110,6 +116,9 @@ class PiperGamepad6Dof(Teleoperator):
             if event.type == pygame.JOYBUTTONDOWN:
                 if event.button == c.button_intervention:
                     self._intervention = not self._intervention
+                elif event.button == c.button_pause:
+                    self._paused = not self._paused
+                    logger.info("Rollout %s", "PAUSED (Options to resume)" if self._paused else "RESUMED")
                 elif event.button == c.button_success:
                     self._episode_end = TeleopEvents.SUCCESS
                 elif event.button == c.button_failure:
@@ -177,6 +186,47 @@ class PiperGamepad6Dof(Teleoperator):
             TeleopEvents.SUCCESS: end == TeleopEvents.SUCCESS,
             TeleopEvents.RERECORD_EPISODE: False,
         }
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def wait_while_paused(self, poll_s: float = 0.05) -> bool:
+        """Block until the operator un-pauses. Returns True if we actually waited.
+
+        Called from the patched ``RobotEnv.step`` *before* the action is applied, so
+        the arm simply holds its last commanded pose. Safe to block: the episode
+        limit is a step counter (``TimeLimitProcessorStep``), not wall-clock, so a
+        pause does not eat into the episode. Events keep being pumped here -- that is
+        how the un-pause press is seen.
+        """
+        if self._joystick is None or not self._paused:
+            return False
+
+        import time
+
+        while self._paused:
+            self._pump()
+            time.sleep(poll_s)
+        return True
+
+    def reset(self) -> None:
+        """Clear latched state so every episode starts with intervention OFF.
+
+        Called at each episode reset (see ``patches.py``). The pygame event queue is
+        drained first: presses made *during* the reset motion would otherwise sit
+        queued and immediately re-toggle intervention on the first ``_pump()`` of the
+        new episode, which is exactly the surprise this is meant to prevent.
+        """
+        if self._joystick is not None:
+            import pygame
+
+            try:
+                pygame.event.clear()
+            except pygame.error:  # not initialised (e.g. during teardown) -- nothing queued
+                pass
+        self._intervention = False
+        self._episode_end = None
 
     def send_feedback(self, feedback: dict) -> None:
         pass

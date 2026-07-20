@@ -20,7 +20,7 @@ libstdc++ lacks a symbol scipy needs); it applies automatically on
 ## Run
 
 ```bash
-./scripts/restart-can                 # bring up the CAN bus as left_piper
+bash scripts/restart_can.sh           # bring up the CAN bus as left_piper
 conda activate piper_hilserl_rl
 
 # A) Atomic teleop test — no cameras, no recording, no learning
@@ -40,6 +40,7 @@ LeRobot dataset.
 | Input | Action |
 |-------|--------|
 | **Share (8)** | **toggle intervention** on/off (take over / release) |
+| **Options (9)** | **pause / resume** the whole rollout loop |
 | Left stick | X / Y translation (world frame) |
 | R2 / L2 | Z up / down |
 | Right stick / L1 / R1 | roll / pitch / yaw (EE frame) |
@@ -48,6 +49,16 @@ LeRobot dataset.
 
 The arm holds when you're not intervening; press Share to drive. Translating holds
 the gripper's world-frame orientation constant (so you can hold a top-down grasp).
+
+**Every episode starts with intervention OFF**, even if you ended the previous one
+mid-drive — the toggle is cleared on reset, along with any queued button presses made
+during the reset motion. Press Share to take over again.
+
+**Options pauses everything** — the arm holds its last pose and no transitions are
+produced, so you can reposition the workspace or take a break mid-run. It blocks
+*before* the action reaches the robot, and the episode limit counts steps rather than
+seconds, so a pause never eats into the episode you resume into. Pause persists across
+episode resets; the learner keeps training on the data it already has.
 
 ## How it fits together
 
@@ -68,16 +79,23 @@ Plugin (`src/piper_teleop/lerobot_plugin/`):
 
 All patches live in one place — `patches.py`'s **`apply_lerobot_patches()`** — and
 every entrypoint (teleop/record, and the SAC learner + actor) calls it, so every
-process that builds an env behaves identically. The seven patches:
+process that builds an env behaves identically. The eleven patches:
 `RobotKinematics` (Arm_IK), the three 6-DOF action steps, `EEReferenceAndDelta`
 (persistent target), `GripperVelocityToJoint` (boolean), the env **action space**
-(stock `RobotEnv` hardcodes 3-DOF → bumped to 6), and the **pyav** video backend
-(torchcodec fails to decode the recorded mp4s).
+(stock `RobotEnv` hardcodes 3-DOF → bumped to 6), the **pyav** video backend
+(torchcodec fails to decode the recorded mp4s), and **dataset-optional validation**
+(`TrainPipelineConfig.validate` dereferences `self.dataset.repo_id` unconditionally,
+so `dataset: null` — which the RL config explicitly allows and the learner guards
+for at runtime — would otherwise crash before training starts), and an
+**intervention reset** on `AddTeleopEventsAsInfoStep.reset` so the latched
+intervention toggle starts every episode OFF instead of carrying over, a
+**gamepad pause** on `RobotEnv.step` (Options freezes the rollout), and
+**informative learner logging** + tensorboard (see below).
 
 ### YOLO grasp reward
 
 `GripperHoldYoloGraspRewardStep` (in `~/lerobot`'s `processor/hil_processor.py`,
-added by a colleague): once the gripper is held closed for `hold_seconds`, it runs
+added by Sebastien): once the gripper is held closed for `hold_seconds`, it runs
 the YOLO-cls model (`cls_train_val_210526_nativeish2/weights/best.pt`, classes
 Aluminium/Empty/Other/PET) on the wrist camera. Top-1 in `success_classes`
 (PET/Aluminium, conf ≥ threshold) → reward + episode end. **This replaces training a
@@ -119,9 +137,24 @@ python scripts/crop_demos.py \
 python scripts/run_sac_learner.py --config_path config/sac_piper.json
 
 # 2. actor, separate terminal, on the robot
-./scripts/restart-can
+bash scripts/restart_can.sh
 python scripts/run_sac_actor.py --config_path config/sac_piper.json
 ```
+
+### Running with no demos at all
+
+`config/sac_piper_fresh.json` is the same config with `dataset: null` and
+`online_ratio: 1.0` — nothing pre-existing is loaded, so learning comes purely from
+online transitions and your interventions. Skip the `crop_demos.py` step entirely:
+
+```bash
+python scripts/run_sac_learner.py --config_path config/sac_piper_fresh.json
+python scripts/run_sac_actor.py   --config_path config/sac_piper_fresh.json
+```
+
+This is the hardest setting — standard HIL-SERL seeds with 20-50 demos, so expect
+slower convergence and intervene generously for the first many episodes. Note the
+learner still writes checkpoints normally; only the offline buffer is skipped.
 
 **How it learns (important).** There is **no offline pre-training**. The actor starts
 acting immediately with a randomly-initialised policy (so it flails at first); the
@@ -132,6 +165,58 @@ transitions, then learns and acts concurrently. The real early-learning driver i
 are high-quality on-policy data. (For a non-random start, BC/ACT-pretrain a policy on
 the demos and point `policy.pretrained_path` at it — a worthwhile future step given
 the 1429 demos / existing ACT policy.)
+
+### Reading the learner output
+
+**Learning is continuous, not per-episode.** The learner loop is fully decoupled from
+episode boundaries: it drains whatever transitions the actor has sent, and as soon as
+the buffer holds `online_step_before_learning` (100) samples it takes **one gradient
+step per loop iteration**, forever — roughly 3-4 Hz on this box. Each step is
+`utd_ratio` (2) critic updates on a batch of 256. Episodes only matter in that they
+feed the buffer; nothing waits for one to end.
+
+The one thing that *is* episodic-ish from the robot's point of view:
+`policy_parameters_push_frequency: 50` is in **seconds**, so the actor only receives
+updated weights every ~50 s. Behaviour on the robot changes in steps, not smoothly.
+
+Stock logging is close to useless — the optimization-frequency line prints several
+times a second while every loss and every episode result goes only to wandb, which is
+disabled by default. The `_informative_learner_logging` patch drops that spam and
+prints instead:
+
+```
+[LEARNER] step 1234 | 3.8 Hz | buffer 2456/15000 | loss_actor=-1.203 | loss_critic=0.4123 | ...
+[LEARNER] EPISODE done @ interaction 500 | reward 1 | intervention 45% (human)
+```
+
+Training lines come every `PIPER_LEARNER_LOG_S` seconds (default 10, e.g.
+`PIPER_LEARNER_LOG_S=30 python scripts/run_sac_learner.py ...`); episode lines come one
+per finished episode.
+
+### Plots (tensorboard)
+
+The same patch mirrors every scalar into tensorboard — LeRobot's RL stack only supports
+wandb, so this is our own sink. No account or login, everything stays local:
+
+```bash
+conda activate piper_hilserl_rl               # tensorboard lives in this env only
+tensorboard --logdir outputs/tensorboard      # then open http://localhost:6006
+```
+
+(In a fresh terminal the `conda activate` is required — without it you get
+`command not found`, since tensorboard is installed into `piper_hilserl_rl`.)
+
+Runs are written to `outputs/tensorboard/<timestamp>/` (override with `PIPER_TB_DIR`,
+disable with `PIPER_TB=0`). Scalars: `train/loss_*`, `train/optimization_hz`,
+`train/replay_buffer_size` against optimization step, and `episode/reward` +
+`episode/intervention_rate` against interaction step.
+
+**The two curves that matter are `episode/reward` and `episode/intervention_rate`** —
+is it succeeding, and does it need you less over time. SAC's `loss_critic` is not
+monotonic and tells you little about progress.
+
+(wandb also works — set `wandb.enable: true` — but viewing needs an account: offline
+runs have no local viewer, only `wandb sync` to wandb.ai or a self-hosted server.)
 
 **Demos need `complementary_info.discrete_penalty`.** The actor attaches it to every
 online transition and the SAC discrete-critic loss adds it to the reward, so the

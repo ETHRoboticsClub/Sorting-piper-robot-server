@@ -37,3 +37,4 @@ class PiperGamepad6DofConfig(TeleoperatorConfig):
     button_intervention: int = 8   # Share: press to toggle intervention on/off (take over / release)
     button_success: int = 2   # Square -> episode success
     button_failure: int = 3   # Triangle -> episode failure
+    button_pause: int = 9     # Options: freeze/resume the whole rollout loop

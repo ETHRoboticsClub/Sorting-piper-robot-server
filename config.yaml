@@ -50,9 +50,9 @@ cameras:
   wrist1:
     type: monocular
     backend: realsense
-    serial_number: 234322305361
+    serial_number: "234322305361"   # wrist cam of the conveyor system
+    # alternatives: 030422250224 (second arm), 126122270287 (D405)
     realsense_auto_exposure: true
-    # serial_number 126122270287 #D405 
     mode: recording
     fps: "30"
     frame_width: "640"
@@ -61,12 +61,14 @@ cameras:
     capture_frame_height: "480"
     capture_api: 200
     cam_index: "0"
+  # NOTE: a configured-but-unplugged camera crashes the WHOLE camera streamer
+  # (all cameras stop). If you unplug this one, set `topdown: null` instead.
+  # KEEP THE QUOTES on serials — an unquoted leading-zero serial parses as octal.
   topdown:
     type: monocular
     backend: realsense
-    serial_number: 213522251124
+    serial_number: "213522251124"
     realsense_auto_exposure: true
-    # serial_number: "030422250224"
     mode: recording
     fps: "30"
     frame_width: "640"

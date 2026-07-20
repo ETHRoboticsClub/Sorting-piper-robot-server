@@ -29,6 +29,10 @@ def apply_lerobot_patches() -> None:
 
     _patch_6dof_action_space(gm)
     _force_pyav_video_backend()
+    _allow_datasetless_rl_config()
+    _reset_intervention_each_episode()
+    _informative_learner_logging()
+    _gamepad_pause(gm)
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -59,6 +63,257 @@ def _patch_6dof_action_space(gm) -> None:
         )
 
     gm.RobotEnv._setup_spaces = _setup_spaces_6dof
+
+
+def _gamepad_pause(gm) -> None:
+    """Let the Options button freeze the rollout loop (robot + data collection).
+
+    Blocks at the top of ``RobotEnv.step``, before the action reaches the arm, so the
+    robot holds its last commanded pose and no transitions are produced. The learner
+    keeps training on what it already has, which is harmless -- and lets you reposition
+    the workspace or take a break without stopping the run.
+
+    This is safe with respect to episode length: ``TimeLimitProcessorStep`` counts
+    *steps*, not seconds, so a pause never truncates the episode you resume into.
+
+    ``RobotEnv`` holds no teleoperator reference, so we read the pause flag off the
+    connected gamepad (``PiperGamepad6Dof._active``).
+    """
+    if getattr(gm.RobotEnv.step, "_piper_pausable", False):
+        return
+
+    from .piper_gamepad import PiperGamepad6Dof
+
+    _orig_step = gm.RobotEnv.step
+
+    def step(self, action):
+        device = PiperGamepad6Dof._active
+        if device is not None:
+            device.wait_while_paused()
+        return _orig_step(self, action)
+
+    step._piper_pausable = True
+    gm.RobotEnv.step = step
+
+
+def _tensorboard_writer():
+    """A ``SummaryWriter`` for the learner, or None if tensorboard isn't usable.
+
+    LeRobot's RL stack only knows about wandb, so this is our own scalar sink. Runs
+    land in ``PIPER_TB_DIR`` (default ``outputs/tensorboard/<timestamp>``); view with
+    ``tensorboard --logdir outputs/tensorboard``.
+    """
+    import logging
+    import os
+
+    if os.environ.get("PIPER_TB", "1") == "0":
+        return None
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:  # noqa: BLE001 - tensorboard is optional
+        return None
+
+    logdir = os.environ.get("PIPER_TB_DIR")
+    if not logdir:
+        import datetime as _dt
+
+        logdir = os.path.join("outputs", "tensorboard", _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    try:
+        writer = SummaryWriter(log_dir=logdir)
+    except Exception:  # noqa: BLE001
+        return None
+    logging.info("[LEARNER] tensorboard: tensorboard --logdir %s", os.path.dirname(logdir) or logdir)
+    return writer
+
+
+def _informative_learner_logging() -> None:
+    """Replace the learner's per-iteration Hz spam with a useful periodic summary.
+
+    Stock behaviour is nearly unreadable: the optimization-frequency line is logged
+    on *every* iteration (several times a second), while everything worth reading --
+    the SAC losses from ``stats.to_log_dict()`` and the per-episode reward /
+    intervention rate from ``process_interaction_message`` -- is only ever sent to
+    the wandb logger. With ``wandb.enable: false`` all of it is computed and thrown
+    away, leaving only the Hz line on the console.
+
+    So: drop the per-iteration Hz records, and instead emit
+      * a training line every ``PIPER_LEARNER_LOG_S`` seconds (default 10) with the
+        optimization step, throughput, replay-buffer fill, and the losses, and
+      * one line per finished episode with its reward and intervention rate.
+    """
+    import logging
+    import os
+    import time
+
+    interval_s = float(os.environ.get("PIPER_LEARNER_LOG_S", "10"))
+    writer = _tensorboard_writer()
+
+    # --- 1. silence the per-iteration Hz line (we report throughput ourselves) ---
+    root = logging.getLogger()
+    if not any(getattr(f, "_piper_hz_filter", False) for f in root.filters):
+
+        class _DropHzSpam(logging.Filter):
+            _piper_hz_filter = True
+
+            def filter(self, record: logging.LogRecord) -> bool:
+                return "Optimization frequency loop" not in record.getMessage()
+
+        root.addFilter(_DropHzSpam())
+
+    # --- 2. periodic training summary ---
+    from lerobot.rl.trainer import RLTrainer
+
+    if not getattr(RLTrainer.training_step, "_piper_verbose", False):
+        _orig_training_step = RLTrainer.training_step
+
+        def training_step(self):
+            stats = _orig_training_step(self)
+
+            now = time.time()
+            state = getattr(self, "_piper_log_state", None)
+            if state is None:
+                state = {"last": now, "steps": 0}
+                self._piper_log_state = state
+            state["steps"] += 1
+
+            elapsed = now - state["last"]
+            if elapsed >= interval_s:
+                step = getattr(self.algorithm, "optimization_step", 0)
+                hz = state["steps"] / elapsed
+
+                parts = [f"step {step}", f"{hz:.1f} Hz"]
+
+                online = getattr(self.data_mixer, "online_buffer", None)
+                if online is not None:
+                    cap = getattr(online, "capacity", None)
+                    parts.append(f"buffer {len(online)}{f'/{cap}' if cap else ''}")
+                offline = getattr(self.data_mixer, "offline_buffer", None)
+                if offline is not None:
+                    parts.append(f"demos {len(offline)}")
+
+                try:  # losses last: keys vary by algorithm, so stay defensive
+                    logs = stats.to_log_dict()
+                    named = [(k, v) for k, v in logs.items() if isinstance(v, (int, float))]
+                    named.sort(key=lambda kv: ("loss" not in kv[0].lower(), kv[0]))
+                    parts += [f"{k}={v:.4g}" for k, v in named[:5]]
+
+                    if writer is not None:
+                        for k, v in named:
+                            writer.add_scalar(f"train/{k}", v, step)
+                        writer.add_scalar("train/optimization_hz", hz, step)
+                        if online is not None:
+                            writer.add_scalar("train/replay_buffer_size", len(online), step)
+                        writer.flush()
+                except Exception:  # noqa: BLE001 - logging must never kill training
+                    pass
+
+                logging.info("[LEARNER] " + " | ".join(parts))
+                state["last"] = now
+                state["steps"] = 0
+
+            return stats
+
+        training_step._piper_verbose = True
+        RLTrainer.training_step = training_step
+
+    # --- 3. one line per finished episode ---
+    import lerobot.rl.learner as _learner
+
+    if not getattr(_learner.process_interaction_message, "_piper_verbose", False):
+        _orig_process = _learner.process_interaction_message
+
+        def process_interaction_message(message, interaction_step_shift: int, wandb_logger=None):
+            msg = _orig_process(message, interaction_step_shift, wandb_logger)
+            try:
+                reward = msg.get("Episodic reward")
+                if reward is not None:
+                    rate = msg.get("Intervention rate", 0.0) or 0.0
+                    took_over = "human" if msg.get("Episode intervention") else "autonomous"
+                    logging.info(
+                        "[LEARNER] EPISODE done @ interaction %s | reward %.3g | "
+                        "intervention %.0f%% (%s)",
+                        msg.get("Interaction step", "?"),
+                        reward,
+                        rate * 100.0,
+                        took_over,
+                    )
+                    if writer is not None:
+                        istep = msg.get("Interaction step") or 0
+                        writer.add_scalar("episode/reward", reward, istep)
+                        writer.add_scalar("episode/intervention_rate", rate, istep)
+                        writer.flush()
+            except Exception:  # noqa: BLE001 - never break the learner on a log line
+                pass
+            return msg
+
+        process_interaction_message._piper_verbose = True
+        _learner.process_interaction_message = process_interaction_message
+
+
+def _reset_intervention_each_episode() -> None:
+    """Start every episode with the intervention toggle OFF.
+
+    Intervention is a *latched* toggle, so without this it carries across episode
+    boundaries: end an episode while driving and the next one silently starts under
+    human control, mislabelling autonomous steps as interventions.
+
+    ``AddTeleopEventsAsInfoStep`` is the pipeline step that owns the teleop device,
+    and ``reset_and_build_transition`` resets the processor pipelines on every episode
+    (``env_processor.reset()`` -> ``step.reset()`` for each step). Hook that step's
+    ``reset`` to also clear the teleoperator's latched state. This covers both the SAC
+    actor and the teleop/record ``control_loop``, since both reset via that path.
+    """
+    from lerobot.processor.hil_processor import AddTeleopEventsAsInfoStep
+
+    if getattr(AddTeleopEventsAsInfoStep.reset, "_piper_resets_intervention", False):
+        return
+
+    _orig_reset = AddTeleopEventsAsInfoStep.reset
+
+    def _reset(self) -> None:
+        _orig_reset(self)
+        device_reset = getattr(getattr(self, "teleop_device", None), "reset", None)
+        if callable(device_reset):
+            device_reset()
+
+    _reset._piper_resets_intervention = True
+    AddTeleopEventsAsInfoStep.reset = _reset
+
+
+def _allow_datasetless_rl_config() -> None:
+    """Let ``dataset: null`` validate, for RL runs with no offline demos.
+
+    ``TrainRLServerPipelineConfig`` declares ``dataset`` optional (its own comment
+    says "In RL, we don't need an offline dataset") and the learner guards every
+    runtime use with ``if cfg.dataset is not None``. But the inherited
+    ``TrainPipelineConfig.validate`` dereferences ``self.dataset.repo_id``
+    unconditionally, so a dataset-free config dies with ``AttributeError:
+    'NoneType' object has no attribute 'repo_id'`` before training starts.
+
+    Temporarily stand in a throwaway ``DatasetConfig`` for the duration of the
+    parent's validate, then restore ``None`` so no offline buffer is created.
+    """
+    from lerobot.configs.train import TrainPipelineConfig
+
+    if getattr(TrainPipelineConfig.validate, "_piper_datasetless_ok", False):
+        return
+
+    _orig_validate = TrainPipelineConfig.validate
+
+    def _validate(self):
+        if getattr(self, "dataset", None) is not None:
+            return _orig_validate(self)
+
+        from lerobot.configs.default import DatasetConfig
+
+        self.dataset = DatasetConfig(repo_id="__none__")
+        try:
+            return _orig_validate(self)
+        finally:
+            self.dataset = None
+
+    _validate._piper_datasetless_ok = True
+    TrainPipelineConfig.validate = _validate
 
 
 def _force_pyav_video_backend() -> None:

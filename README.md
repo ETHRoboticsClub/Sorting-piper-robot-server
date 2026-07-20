@@ -18,7 +18,7 @@ Teleoperation server for AgileX Piper arms with **keyboard**, **gamepad**, or le
 Bring up the arm:
 
 ```bash
-restart-can    # password: arc_user
+bash scripts/restart_can.sh    # password: arc_user
 conda activate piper_new
 ```
 
@@ -126,10 +126,10 @@ See [Remove a camera feature](#remove-a-camera-feature-eg-drop-the-top-down-came
 3. **Bringing up the arm.** Plug the USB-CAN adapter in, then run:
 
    ```bash
-   restart-can    # password: arc_user
+   bash scripts/restart_can.sh    # password: arc_user
    ```
 
-   That's all — no need to run `sudo ip link ...` by hand. If at any point the arm stops responding, unplug the USB-CAN, plug it back in, and run `restart-can` again. See [CAN bus setup](#can-bus-setup) for the manual fallback if `restart-can` isn't available on the machine.
+   That's all — no need to run `sudo ip link ...` by hand. If at any point the arm stops responding, unplug the USB-CAN, plug it back in, and run it again. See [CAN bus setup](#can-bus-setup) for details and the manual fallback.
 
 ---
 
@@ -163,17 +163,27 @@ Piper uses **CAN**; the SDK expects **stable interface names** (not only `can0`)
 
 ### Day-to-day usage (recommended)
 
-On this machine the whole CAN bring-up is wrapped in a single shell command:
+On this machine the whole CAN bring-up is wrapped in a single script:
 
 ```bash
-restart-can    # password: arc_user
+bash scripts/restart_can.sh    # password: arc_user
 ```
 
-That's it — plug the arm in, run `restart-can`, and you're good to go. If the arm stops responding or CAN looks unstable: unplug the USB-CAN adapter, plug it back in, and run `restart-can` again.
+That's it — plug the arm in, run it, and you're good to go. If the arm stops responding or CAN looks unstable: unplug the USB-CAN adapter, plug it back in, and run it again.
 
-> `restart-can` is a local alias / script on the lab machine. On a fresh machine without it, fall back to the manual bring-up below.
+Verify it worked (`left_piper` should be listed and `UP`):
 
-### Manual bring-up (fresh machine, no `restart-can`)
+```bash
+ip -br link show type can
+```
+
+> **Use `restart_can.sh`, not the older `scripts/restart-can`.** The current lab
+> adapter is a **CANable 2.0** in SLCAN mode, which appears as `/dev/ttyACM0` and has
+> **no native `can0`** — `restart_can.sh` starts `slcand` to create the interface first.
+> The older `restart-can` skips that step and fails immediately with
+> `Cannot find device "can0"`.
+
+### Manual bring-up (fresh machine)
 
 1. `ip -br link show type can` — note the interface (often `can0`).
 2. Optional: bus-info for persistent naming — `bash src/piper_teleop/robot_server/find_all_can_port.sh`
@@ -217,7 +227,47 @@ If an interface is DOWN: `sudo ip link set <iface> up type can bitrate 1000000` 
 
 ### Cameras
 
-Defaults: wrist + top-down monocular (`config.py` / `DEFAULT_CONFIG`). Set `cam_index` after listing devices:
+Defaults: wrist + top-down monocular (`config.py` / `DEFAULT_CONFIG`), configured under
+`cameras:` in `config.yaml`. Each entry picks a **backend**:
+
+**RealSense (current lab setup).** Set `backend: realsense` and identify the camera by
+**`serial_number`**, not `cam_index`. List attached devices with:
+
+```bash
+python scripts/find_realsense_cameras.py
+```
+
+```yaml
+cameras:
+  wrist1:
+    type: monocular
+    backend: realsense
+    serial_number: "030422250224"   # KEEP THE QUOTES — see below
+    realsense_auto_exposure: true
+    mode: recording
+    fps: "30"
+    frame_width: "640"
+    frame_height: "480"
+```
+
+Two things that will bite you:
+
+- **Always quote the serial.** A leading-zero serial like `030422250224` is parsed as an
+  octal number when unquoted, and the camera silently won't be found.
+- **A missing camera takes down the whole camera streamer.** If a configured serial isn't
+  physically attached, `init_camera()` raises, the exception propagates through
+  `asyncio.gather`, and *all* camera tasks are cancelled — including working ones. The
+  symptom is `Stopping all cameras` right after another camera reports success, then no
+  frames and no `--show-cameras` preview. To run with only one camera, set the other to
+  `null`:
+
+  ```yaml
+  cameras:
+    wrist1: { ... }
+    topdown: null
+  ```
+
+**OpenCV / V4L2.** Leave `backend` unset and set `cam_index` after listing devices:
 
 ```bash
 python scripts/find_cameras.py
@@ -581,3 +631,33 @@ lerobot-edit-dataset \
   --operation.type info \
   --operation.show_features true
 ```
+---
+
+## Current checkpoints (quick reference)
+
+Both deploy against the same dataset, `data/2026-06-19_pet_alu_wrist_only` (wrist camera
+only). Share toggles between policy and manual gamepad control.
+
+```bash
+# ACT
+robotserver --show-cameras --policy --gamepad --record \
+  --task pet \
+  --policy-type act \
+  --policy-path outputs/150000/pretrained_model \
+  --policy-repo-id data/2026-06-19_pet_alu_wrist_only
+```
+
+```bash
+# Multitask DiT
+robotserver --show-cameras --policy --gamepad --record \
+  --task pet \
+  --policy-type multitask-Dit \
+  --policy-path outputs/dit/pretrained_model \
+  --policy-repo-id data/2026-06-19_pet_alu_wrist_only
+```
+
+> These checkpoints were trained on the **wrist camera only**. Deploying them with a
+> top-down camera also configured changes the observation the policy sees — keep
+> `topdown: null` unless you retrain.
+
+For the reinforcement-learning (HIL-SERL) workflow, see **[HILSERL.md](HILSERL.md)**.
