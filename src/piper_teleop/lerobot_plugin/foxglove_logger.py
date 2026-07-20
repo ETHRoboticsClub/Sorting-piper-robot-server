@@ -134,7 +134,16 @@ class FoxgloveEpisodeLogger:
                 )
                 logger.info("[FOXGLOVE] live stream on ws://127.0.0.1:%d", self._live_port)
             except Exception as exc:  # noqa: BLE001 - live viz is never worth failing a run
-                logger.warning("[FOXGLOVE] live stream unavailable (%s: %s)", type(exc).__name__, exc)
+                logger.error(
+                    "[FOXGLOVE] LIVE STREAM DISABLED on port %d (%s: %s). Another process "
+                    "probably holds the port -- a stale actor, or a viewer will attach to it "
+                    "and see nothing. Recording to MCAP continues. Set PIPER_FG_PORT to "
+                    "another port, or stop the process holding it (ss -ltnp | grep %d).",
+                    self._live_port,
+                    type(exc).__name__,
+                    exc,
+                    self._live_port,
+                )
                 self._live = False
 
         self._thread = threading.Thread(target=self._run, name="foxglove-mcap", daemon=True)

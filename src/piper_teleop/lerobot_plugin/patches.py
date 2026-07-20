@@ -97,9 +97,18 @@ def _foxglove_episode_logging(gm) -> None:
 
     from lerobot.types import TransitionKey
 
-    recorder = FoxgloveEpisodeLogger()
-    if not recorder.enabled:
-        return
+    # Created on first use, NOT here. `apply_lerobot_patches()` runs in the learner
+    # too, and constructing the logger eagerly would start its live WebSocket server
+    # there -- the learner would win the race for the port, the actor would fail to
+    # bind and silently fall back to record-only, and a viewer would attach to the
+    # learner's server and see nothing. Only the actor ever calls these hooks, so
+    # deferring construction puts the server in the process that has the data.
+    holder: dict[str, Any] = {"recorder": None}
+
+    def recorder():
+        if holder["recorder"] is None:
+            holder["recorder"] = FoxgloveEpisodeLogger()
+        return holder["recorder"]
 
     _orig_step = gm.step_env_and_process_transition
     _orig_reset = gm.reset_and_build_transition
@@ -108,7 +117,7 @@ def _foxglove_episode_logging(gm) -> None:
         new_transition = _orig_step(env, transition, action, env_processor, action_processor)
         try:
             complementary = new_transition.get(TransitionKey.COMPLEMENTARY_DATA) or {}
-            recorder.log_transition(
+            recorder().log_transition(
                 observation=new_transition.get(TransitionKey.OBSERVATION),
                 # the action actually executed -- the teleop one during an intervention
                 action=complementary.get("teleop_action", action),
@@ -122,10 +131,10 @@ def _foxglove_episode_logging(gm) -> None:
         return new_transition
 
     def reset_and_build_transition(env, env_processor, action_processor):
-        recorder.end_episode()
+        recorder().end_episode()
         result = _orig_reset(env, env_processor, action_processor)
         try:
-            recorder.start_episode({"started_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S")})
+            recorder().start_episode({"started_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S")})
         except Exception:  # noqa: BLE001
             pass
         return result
@@ -143,7 +152,7 @@ def _foxglove_episode_logging(gm) -> None:
         if hasattr(module, "reset_and_build_transition"):
             module.reset_and_build_transition = reset_and_build_transition
 
-    atexit.register(recorder.close)
+    atexit.register(lambda: holder["recorder"] and holder["recorder"].close())
 
 
 def _gamepad_pause(gm) -> None:
