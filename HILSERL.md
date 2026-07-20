@@ -19,6 +19,30 @@ libstdc++ lacks a symbol scipy needs); it applies automatically on
 
 ## Run
 
+### Quickstart — one command
+
+```bash
+./scripts/start_hilserl.sh
+```
+
+Runs preflight (conda env, config, CAN bring-up, **every configured camera actually
+attached**, gamepad) and then opens three terminals: learner, actor, and tensorboard.
+The actor waits on the learner's gRPC port, so start-up ordering takes care of itself.
+No conda activation needed beforehand — each terminal activates the env itself.
+
+```bash
+./scripts/start_hilserl.sh --check                      # preflight only, launch nothing
+./scripts/start_hilserl.sh --config config/sac_piper.json  # seed from demos instead
+./scripts/start_hilserl.sh --no-can --no-tb             # bus already up, no plots
+```
+
+The camera check is the one that earns its keep: a configured-but-unplugged RealSense
+takes down the entire camera streamer at runtime, and the failure looks like a stall
+rather than an error. Preflight turns that into `camera(s) not attached: wrist1=...`
+before anything starts. Falls back to `tmux` when no graphical terminal is available.
+
+### Manual (what the launcher does)
+
 ```bash
 bash scripts/restart_can.sh           # bring up the CAN bus as left_piper
 conda activate piper_hilserl_rl
@@ -197,6 +221,8 @@ per finished episode.
 
 The same patch mirrors every scalar into tensorboard — LeRobot's RL stack only supports
 wandb, so this is our own sink. No account or login, everything stays local:
+
+`start_hilserl.sh` opens this for you. To run it by hand:
 
 ```bash
 conda activate piper_hilserl_rl               # tensorboard lives in this env only

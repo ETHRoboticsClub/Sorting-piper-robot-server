@@ -660,4 +660,17 @@ robotserver --show-cameras --policy --gamepad --record \
 > top-down camera also configured changes the observation the policy sees — keep
 > `topdown: null` unless you retrain.
 
-For the reinforcement-learning (HIL-SERL) workflow, see **[HILSERL.md](HILSERL.md)**.
+---
+
+## Reinforcement learning (HIL-SERL)
+
+A separate workflow — the robot learns from its own attempts plus your gamepad
+corrections, rather than from pre-recorded demonstrations. One command sets up the
+whole session (CAN bus, learner, actor, tensorboard, with preflight checks):
+
+```bash
+./scripts/start_hilserl.sh
+```
+
+See **[HILSERL.md](HILSERL.md)** for the operator guide, gamepad controls, and how to
+read the training output.
