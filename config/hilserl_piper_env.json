@@ -58,7 +58,7 @@
       },
       "max_gripper_pos": 0.07,
       "yolo_grasp_reward": {
-        "weights_path": "/home/ethrc/Sorting-piper-robot-server/cls_train_val_210526_nativeish2/weights/best.pt",
+        "weights_path": "/home/ethrc/Sorting-piper-robot-server/runs/classify/cv_runs/cls_train_val_full_21072026/weights/best.pt",
         "success_classes": ["PET", "Aluminium"],
         "confidence_threshold": 0.5,
         "camera_key": "wrist",

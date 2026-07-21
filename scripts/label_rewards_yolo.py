@@ -32,7 +32,7 @@ import pandas as pd
 import piper_teleop.lerobot_plugin  # noqa: F401  (registers plugin)
 from piper_teleop.lerobot_plugin.patches import apply_lerobot_patches
 
-DEFAULT_WEIGHTS = "cls_train_val_210526_nativeish2/weights/best.pt"
+DEFAULT_WEIGHTS = "runs/classify/cv_runs/cls_train_val_full_21072026/weights/best.pt"
 RECOMPUTE_FEATS = [
     "action", "observation.state", "next.reward", "next.done",
     "complementary_info.discrete_penalty",

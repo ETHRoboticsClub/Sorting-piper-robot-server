@@ -125,7 +125,7 @@ intervention toggle starts every episode OFF instead of carrying over, a
 
 `GripperHoldYoloGraspRewardStep` (in `~/lerobot`'s `processor/hil_processor.py`,
 added by Sebastien): once the gripper is held closed for `hold_seconds`, it runs
-the YOLO-cls model (`cls_train_val_210526_nativeish2/weights/best.pt`, classes
+the YOLO-cls model (`runs/classify/cv_runs/cls_train_val_full_21072026/weights/best.pt`, classes
 Aluminium/Empty/Other/PET) on the wrist camera. Top-1 in `success_classes`
 (PET/Aluminium, conf ≥ threshold) → reward + episode end. **This replaces training a
 separate LeRobot reward classifier.** Configured under `processor.yolo_grasp_reward`.
