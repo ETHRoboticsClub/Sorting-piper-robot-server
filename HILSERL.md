@@ -155,6 +155,15 @@ dense terms shape *how* the arm gets there:
   note the spike. Set `PIPER_CURRENT_THRESHOLD` between the two and
   `PIPER_CURRENT_WEIGHT` to a small value (start ~0.02).
 
+  There is no fixed current cutoff to target: the Piper controller trips its **own**
+  collision/stall protection based on a per-joint **collision-protection level (0–8,
+  configurable; 0 = off, higher = more sensitive)**, and reports the trip as a fault
+  bit in the low-speed CAN feedback (`collision protection status`, `stalling
+  protection status`, `driver over-current`). That flag is a more reliable collision
+  signal than any current magnitude — a natural next step is to penalise on the flag
+  directly (and/or read the configured level) rather than a hand-tuned effort
+  threshold.
+
 Both are deliberately small next to the +1 success. Two caveats worth knowing: the
 smoothness term is a per-step **bonus** (≥0), so in principle a frozen policy could
 farm it — the sparse reward and the episode time limit are what stop that, which is
@@ -268,6 +277,16 @@ camera).
 Training lines come every `PIPER_LEARNER_LOG_S` seconds (default 10, e.g.
 `PIPER_LEARNER_LOG_S=30 python scripts/run_sac_learner.py ...`); episode lines come one
 per finished episode.
+
+**The reward is broken out in tensorboard.** Rather than a single total, each term is
+its own scalar so you can see the shaping in isolation: `reward/task` (sparse grasp),
+`reward/smoothness`, `reward/collision_penalty`, `reward/gripper_penalty`, and
+`reward/total`, plus `episode/peak_effort_max` and `episode/length`. The learner
+writes `train/*` and `episode/{reward,intervention_rate}`; the breakdown is computed
+per transition in the actor and written to the **same** tensorboard run (the launcher
+points both at one `PIPER_TB_DIR`, so their event files merge). `reward/task` =
+`reward/total − smoothness − collision`; the gripper penalty is a discrete-critic
+term and is not part of `reward/total`.
 
 ### Plots (tensorboard)
 

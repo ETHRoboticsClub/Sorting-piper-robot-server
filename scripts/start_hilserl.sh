@@ -241,7 +241,12 @@ fi
 
 # --- launch -----------------------------------------------------------------
 mkdir -p "$TB_LOGDIR"
-FG_DIR="outputs/foxglove/$(date +%Y-%m-%d_%H-%M-%S)"
+STAMP="$(date +%Y-%m-%d_%H-%M-%S)"
+# One tensorboard run dir shared by learner and actor, so the learner's train/*
+# and episode/* merge with the actor's reward/* breakdown in a single run.
+TB_RUN_DIR="$TB_LOGDIR/$STAMP"
+mkdir -p "$TB_RUN_DIR"
+FG_DIR="outputs/foxglove/$STAMP"
 mkdir -p "$FG_DIR"
 
 # Each pane: enter the repo, activate the env, run, then stay open so a crash
@@ -249,7 +254,7 @@ mkdir -p "$FG_DIR"
 wrap() { printf 'cd %q && source %q && conda activate %q && %s; echo; echo "[%s exited -- press enter to close]"; read -r _' \
 	"$REPO_ROOT" "$CONDA_SH" "$ENV_NAME" "$1" "$2"; }
 
-LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START PIPER_WARM_START_POLICY=$WARM_POLICY PIPER_SAVE_LATEST_EVERY=${PIPER_SAVE_LATEST_EVERY:-1} python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
+LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START PIPER_WARM_START_POLICY=$WARM_POLICY PIPER_SAVE_LATEST_EVERY=${PIPER_SAVE_LATEST_EVERY:-1} PIPER_TB_DIR=$(printf '%q' "$TB_RUN_DIR") python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
 # The actor must not start before the learner is serving, or it fails to connect.
 # PIPER_FG_DIR is fixed here so the episode recordings land somewhere predictable.
 ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
@@ -258,6 +263,7 @@ ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT PIPER_WARM_START_POLICY=$WARM_POLICY \
 	PIPER_SMOOTH_WEIGHT=${PIPER_SMOOTH_WEIGHT:-0.005} PIPER_SMOOTH_SCALE=${PIPER_SMOOTH_SCALE:-0.5} \
 	PIPER_CURRENT_WEIGHT=${PIPER_CURRENT_WEIGHT:-0} PIPER_CURRENT_THRESHOLD=${PIPER_CURRENT_THRESHOLD:-3.0} \
+	PIPER_TB_DIR=$(printf '%q' "$TB_RUN_DIR") \
 	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
 

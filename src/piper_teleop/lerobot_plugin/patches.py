@@ -34,6 +34,7 @@ def apply_lerobot_patches() -> None:
     _informative_learner_logging()
     _gamepad_pause(gm)
     _foxglove_episode_logging(gm)
+    _actor_reward_breakdown(gm)
     _warm_start_replay_buffer()
     _warm_start_policy_weights()
     _action_smoothness_reward(gm)
@@ -69,6 +70,100 @@ def _patch_6dof_action_space(gm) -> None:
         )
 
     gm.RobotEnv._setup_spaces = _setup_spaces_6dof
+
+
+def _actor_reward_breakdown(gm) -> None:
+    """Log a per-episode reward breakdown to tensorboard, from the actor.
+
+    Tensorboard otherwise shows only the *total* episodic reward, so the dense
+    shaping terms are invisible. The breakdown is computed per transition in the
+    actor (task vs smoothness vs collision vs gripper penalty), summed per episode,
+    and written as separate ``reward/*`` scalars.
+
+    The actor and learner both write to the same tensorboard dir (the launcher sets
+    a shared ``PIPER_TB_DIR``), so their event files merge into one run -- the
+    learner's ``train/*`` and ``episode/*`` alongside the actor's ``reward/*``.
+
+    ``step_env_and_process_transition`` / ``reset_and_build_transition`` are bound by
+    value in ``actor.py``, so the wrappers are rebound there too; both are already
+    wrapped by the Foxglove patch, and these compose on top.
+    """
+    import logging
+    import os
+
+    if os.environ.get("PIPER_TB", "1") == "0":
+        return
+    if getattr(gm.step_env_and_process_transition, "_piper_reward_breakdown", False):
+        return
+
+    writer = _tensorboard_writer()
+    if writer is None:
+        return
+
+    from lerobot.types import TransitionKey
+
+    log = logging.getLogger(__name__)
+    acc = {"total": 0.0, "smooth": 0.0, "collision": 0.0, "gripper": 0.0, "peak": 0.0, "n": 0, "step": 0, "ep": 0}
+
+    def _flush():
+        if acc["n"] == 0:
+            return
+        x = acc["step"]
+        task = acc["total"] - acc["smooth"] - acc["collision"]  # REWARD = task + smoothness + collision
+        writer.add_scalar("reward/task", task, x)
+        writer.add_scalar("reward/smoothness", acc["smooth"], x)
+        writer.add_scalar("reward/collision_penalty", acc["collision"], x)
+        writer.add_scalar("reward/gripper_penalty", acc["gripper"], x)  # discrete_penalty, not in REWARD
+        writer.add_scalar("reward/total", acc["total"], x)
+        writer.add_scalar("episode/peak_effort_max", acc["peak"], x)
+        writer.add_scalar("episode/length", acc["n"], x)
+        writer.flush()
+        for k in ("total", "smooth", "collision", "gripper", "peak", "n"):
+            acc[k] = 0.0
+
+    _orig_step = gm.step_env_and_process_transition
+    _orig_reset = gm.reset_and_build_transition
+
+    def step_env_and_process_transition(env, transition, action, env_processor, action_processor):
+        new_transition = _orig_step(env, transition, action, env_processor, action_processor)
+        try:
+            info = new_transition.get(TransitionKey.INFO) or {}
+            complementary = new_transition.get(TransitionKey.COMPLEMENTARY_DATA) or {}
+            acc["total"] += float(new_transition.get(TransitionKey.REWARD, 0.0) or 0.0)
+            acc["smooth"] += float(info.get("action_smoothness_reward") or 0.0)
+            acc["collision"] += float(info.get("collision_current_penalty") or 0.0)
+            acc["gripper"] += float(complementary.get("discrete_penalty") or 0.0)
+            acc["peak"] = max(acc["peak"], float(info.get("peak_effort") or 0.0))
+            acc["n"] += 1
+            acc["step"] += 1  # matches the actor's per-transition interaction step
+        except Exception as exc:  # noqa: BLE001 - metrics must never break the rollout
+            log.debug("[TB] reward-breakdown accumulate failed: %s", exc)
+        return new_transition
+
+    def reset_and_build_transition(env, env_processor, action_processor):
+        try:
+            _flush()  # the just-finished episode
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[TB] reward-breakdown flush failed: %s", exc)
+        return _orig_reset(env, env_processor, action_processor)
+
+    step_env_and_process_transition._piper_reward_breakdown = True
+    if getattr(_orig_step, "_piper_foxglove", False):  # carry the other step-wrapper's guard
+        step_env_and_process_transition._piper_foxglove = True
+    reset_and_build_transition._piper_reward_breakdown = True
+    if getattr(_orig_reset, "_piper_foxglove", False):
+        reset_and_build_transition._piper_foxglove = True
+
+    for modname in ("lerobot.rl.gym_manipulator", "lerobot.rl.actor"):
+        try:
+            module = importlib.import_module(modname)
+        except Exception:  # noqa: BLE001
+            continue
+        if hasattr(module, "step_env_and_process_transition"):
+            module.step_env_and_process_transition = step_env_and_process_transition
+        if hasattr(module, "reset_and_build_transition"):
+            module.reset_and_build_transition = reset_and_build_transition
+    log.info("[TB] per-episode reward breakdown -> reward/{task,smoothness,collision_penalty,gripper_penalty,total}")
 
 
 def _foxglove_episode_logging(gm) -> None:
@@ -515,21 +610,31 @@ def _skip_replay_buffer_dump() -> None:
     ReplayBuffer.to_lerobot_dataset = to_lerobot_dataset
 
 
-def _tensorboard_writer():
-    """A ``SummaryWriter`` for the learner, or None if tensorboard isn't usable.
+_TB_WRITER_CACHE: dict = {}
 
-    LeRobot's RL stack only knows about wandb, so this is our own scalar sink. Runs
-    land in ``PIPER_TB_DIR`` (default ``outputs/tensorboard/<timestamp>``); view with
-    ``tensorboard --logdir outputs/tensorboard``.
+
+def _tensorboard_writer():
+    """A process-wide ``SummaryWriter``, or None if tensorboard isn't usable.
+
+    LeRobot's RL stack only knows about wandb, so this is our own scalar sink. Cached
+    per process so the learner-logging and reward-breakdown patches share one writer
+    (and one event file) instead of each opening their own. Runs land in
+    ``PIPER_TB_DIR``; the launcher sets the same dir for the learner and the actor so
+    their event files merge into one tensorboard run.
     """
     import logging
     import os
 
+    if "writer" in _TB_WRITER_CACHE:
+        return _TB_WRITER_CACHE["writer"]
+
     if os.environ.get("PIPER_TB", "1") == "0":
+        _TB_WRITER_CACHE["writer"] = None
         return None
     try:
         from torch.utils.tensorboard import SummaryWriter
     except Exception:  # noqa: BLE001 - tensorboard is optional
+        _TB_WRITER_CACHE["writer"] = None
         return None
 
     logdir = os.environ.get("PIPER_TB_DIR")
@@ -540,8 +645,10 @@ def _tensorboard_writer():
     try:
         writer = SummaryWriter(log_dir=logdir)
     except Exception:  # noqa: BLE001
+        _TB_WRITER_CACHE["writer"] = None
         return None
-    logging.info("[LEARNER] tensorboard: tensorboard --logdir %s", os.path.dirname(logdir) or logdir)
+    logging.info("[TB] tensorboard --logdir %s", os.path.dirname(logdir) or logdir)
+    _TB_WRITER_CACHE["writer"] = writer
     return writer
 
 
