@@ -40,6 +40,7 @@ def apply_lerobot_patches() -> None:
     _action_smoothness_reward(gm)
     _save_latest_policy()
     _skip_replay_buffer_dump()
+    _pause_learning_when_stale()  # applied last: outermost training_step gate
 
 
 def _patch_6dof_action_space(gm) -> None:
@@ -335,6 +336,115 @@ def _warm_start_replay_buffer() -> None:
 
     initialize_replay_buffer._piper_warm_start = True
     _learner.initialize_replay_buffer = initialize_replay_buffer
+
+
+class _NoopStats:
+    """Stand-in for a skipped training step: nothing to log."""
+
+    def to_log_dict(self) -> dict:
+        return {}
+
+
+# Shared learner watchdog state (single process).
+_STALE: dict = {"last_add_ns": 0, "warm_baseline_ns": None, "online_seen": False, "paused": False}
+
+
+def _pause_learning_when_stale() -> None:
+    """Stop optimizing when the actor stops sending fresh transitions.
+
+    On the robot, the learner otherwise keeps training on the replay buffer even when
+    the actor has crashed, hung, or been paused -- i.e. on stale or (if the arm
+    faulted mid-episode) wrong data. The fix: gate training on *fresh online data*.
+
+    Mechanism -- the learner should train only while transitions are still arriving:
+      * every ``ReplayBuffer.add`` stamps the arrival time;
+      * the watchdog arms once the first *online* transition lands (an add after the
+        warm-start seed), so it never fires while training on warm-start data before
+        the actor connects;
+      * once armed, if no transition arrives for ``PIPER_STALE_S`` seconds (default 3),
+        ``training_step`` becomes a no-op -- no gradient step, no checkpoint, no
+        latest-policy save -- until data resumes.
+
+    This one signal covers every "should not be learning" case that stops the stream:
+    actor death, hang, the Options pause (which halts the rollout), and an actor-side
+    fault-stop. The buffer and policy are untouched, so it resumes cleanly.
+
+    ``PIPER_STALE_S=0`` disables the watchdog.
+    """
+    import logging
+    import os
+    import time
+
+    stale_s = float(os.environ.get("PIPER_STALE_S", "3"))
+    if stale_s <= 0:
+        return
+
+    from lerobot.rl.buffer import ReplayBuffer
+    from lerobot.rl.trainer import RLTrainer
+    import lerobot.rl.learner as _learner
+
+    log = logging.getLogger(__name__)
+    stale_ns = int(stale_s * 1e9)
+
+    # 1. Timestamp every buffer add (warm-start seeds and online transitions alike).
+    if not getattr(ReplayBuffer.add, "_piper_stale", False):
+        _orig_add = ReplayBuffer.add
+
+        def add(self, *args, **kwargs):
+            result = _orig_add(self, *args, **kwargs)
+            _STALE["last_add_ns"] = time.time_ns()
+            return result
+
+        add._piper_stale = True
+        ReplayBuffer.add = add
+
+    # 2. Gate training_step (outermost). No-op while stale.
+    if not getattr(RLTrainer.training_step, "_piper_stale", False):
+        _orig_step = RLTrainer.training_step
+
+        def training_step(self):
+            now = time.time_ns()
+            # Arm once an online transition (an add after the warm-start baseline) lands.
+            if _STALE["warm_baseline_ns"] is None:
+                _STALE["warm_baseline_ns"] = _STALE["last_add_ns"]
+            if _STALE["last_add_ns"] > _STALE["warm_baseline_ns"]:
+                _STALE["online_seen"] = True
+
+            stale = _STALE["online_seen"] and (now - _STALE["last_add_ns"] > stale_ns)
+            if stale:
+                if not _STALE["paused"]:
+                    _STALE["paused"] = True
+                    log.warning(
+                        "[LEARNER] PAUSED -- no transitions for >%.0fs (actor crashed, hung, "
+                        "or paused?). Not training on stale data; will resume on fresh data.",
+                        stale_s,
+                    )
+                time.sleep(0.1)  # let the loop cycle so process_transitions can receive data
+                return _NoopStats()
+
+            if _STALE["paused"]:
+                _STALE["paused"] = False
+                log.info("[LEARNER] RESUMED -- fresh transitions arriving again.")
+            return _orig_step(self)
+
+        training_step._piper_stale = True
+        for attr in ("_piper_verbose", "_piper_save_latest"):  # carry other gates' guards
+            if getattr(_orig_step, attr, False):
+                setattr(training_step, attr, True)
+        RLTrainer.training_step = training_step
+
+    # 3. Never checkpoint while paused (optimization_step is frozen, so the loop's
+    #    `step % save_freq == 0` guard could otherwise fire every iteration).
+    if not getattr(_learner.save_training_checkpoint, "_piper_stale", False):
+        _orig_ckpt = _learner.save_training_checkpoint
+
+        def save_training_checkpoint(*args, **kwargs):
+            if _STALE["paused"]:
+                return None
+            return _orig_ckpt(*args, **kwargs)
+
+        save_training_checkpoint._piper_stale = True
+        _learner.save_training_checkpoint = save_training_checkpoint
 
 
 def _save_latest_policy() -> None:

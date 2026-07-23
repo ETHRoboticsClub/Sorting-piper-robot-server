@@ -499,6 +499,35 @@ one is flagged `done`, because `optimize_memory=True` reads `next_state` from in
 field from the **first** transition it sees — omit it and every later online
 transition's penalty is dropped.
 
+### Stop learning when the actor stalls
+
+On the robot the learner otherwise keeps optimizing on the replay buffer even after
+the actor has crashed, hung, or been paused — i.e. on stale data, or (if the arm
+faulted mid-episode) wrong data. A watchdog gates training on **fresh online data**:
+
+- every replay-buffer add is timestamped;
+- the watchdog arms once the first *online* transition lands (an add after the
+  warm-start seed), so it never fires while training on warm-start data before the
+  actor connects;
+- once armed, if no transition arrives for `PIPER_STALE_S` seconds (default 3),
+  `training_step` becomes a no-op — no gradient step, no checkpoint, no latest-policy
+  save — and the learner logs `PAUSED`; it logs `RESUMED` and continues the moment
+  data flows again.
+
+One signal covers every "should not be learning" case that stops the stream: actor
+death or hang, the **Options** pause (which halts the rollout, so transitions stop),
+and any actor-side fault-stop. The buffer and policy are untouched, so it resumes
+cleanly. `PIPER_STALE_S=0` disables it.
+
+### Manual task reward
+
+If the YOLO grasp reward misses a real success, press **Square** (episode success):
+it assigns the `+1` task reward to that transition and ends the episode — the same
+outcome as an automatic success. (This is the built-in HIL-SERL success event, which
+our 6-DOF intervention step preserves.) **Triangle** flags failure. Note: if the
+gripper happens to be held closed when you press Square, the YOLO step can still run
+on the final transition and override the reward — so use it when YOLO did *not* fire.
+
 **Demos need `complementary_info.discrete_penalty`.** The actor attaches it to every
 online transition and the SAC discrete-critic loss adds it to the reward, so the
 offline demos must carry the same (zero) column or the mixed batch mismatches.
