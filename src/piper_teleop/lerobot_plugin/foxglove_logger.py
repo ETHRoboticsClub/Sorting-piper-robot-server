@@ -417,7 +417,7 @@ class FoxgloveEpisodeLogger:
                 "smoothness": float(info.get("action_smoothness_reward") or 0.0),
                 "gripper_penalty": float(info.get("discrete_penalty") or 0.0),
                 "collision_current_penalty": float(info.get("collision_current_penalty") or 0.0),
-                "peak_effort": float(info.get("peak_effort") or 0.0),
+                "current_violation": float(info.get("current_violation") or 0.0),
                 "collision_flag": float(info.get("collision_flag") or 0.0),
                 "arm_enabled": float(info.get("arm_enabled") or 0.0),
             },

@@ -115,7 +115,7 @@ def _actor_reward_breakdown(gm) -> None:
         writer.add_scalar("reward/collision_penalty", acc["collision"], x)
         writer.add_scalar("reward/gripper_penalty", acc["gripper"], x)  # discrete_penalty, not in REWARD
         writer.add_scalar("reward/total", acc["total"], x)
-        writer.add_scalar("episode/peak_effort_max", acc["peak"], x)
+        writer.add_scalar("episode/current_violation_max", acc["peak"], x)
         writer.add_scalar("episode/length", acc["n"], x)
         writer.flush()
         for k in ("total", "smooth", "collision", "gripper", "peak", "n"):
@@ -133,7 +133,7 @@ def _actor_reward_breakdown(gm) -> None:
             acc["smooth"] += float(info.get("action_smoothness_reward") or 0.0)
             acc["collision"] += float(info.get("collision_current_penalty") or 0.0)
             acc["gripper"] += float(complementary.get("discrete_penalty") or 0.0)
-            acc["peak"] = max(acc["peak"], float(info.get("peak_effort") or 0.0))
+            acc["peak"] = max(acc["peak"], float(info.get("current_violation") or 0.0))
             acc["n"] += 1
             acc["step"] += 1  # matches the actor's per-transition interaction step
         except Exception as exc:  # noqa: BLE001 - metrics must never break the rollout
@@ -490,10 +490,11 @@ def _action_smoothness_reward(gm) -> None:
             if cur is not None:
                 state = "ON" if cur.weight > 0 else "OFF (streaming current for calibration)"
                 log.info(
-                    "[REWARD] collision-current penalty %s: weight=%.4g threshold=%.4g effort",
+                    "[REWARD] collision-current penalty %s: weight=%.4g thresholds(A)=%s "
+                    "(-weight * sum_j max(0, |I_j| - thr_j))",
                     state,
                     cur.weight,
-                    cur.threshold,
+                    ",".join(f"{t:g}" for t in cur.thresholds),
                 )
             else:
                 log.info("[REWARD] collision-current penalty unavailable (robot exposes no currents)")

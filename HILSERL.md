@@ -140,33 +140,34 @@ dense terms shape *how* the arm gets there:
   (`PIPER_SMOOTH_SCALE`, default `0.5`) are env vars; `PIPER_SMOOTH_WEIGHT=0` disables
   it. Inserted before batching, only in the actor's pipeline.
 
-- **Collision penalty** — the Piper has no torque sensor, so `CollisionCurrentPenaltyStep`
-  uses two proxies from the CAN feedback:
+- **Collision penalty** (`PIPER_CURRENT_WEIGHT`, default `0.05`, **on**) — the Piper
+  has no torque sensor, so joint **motor current (amps)** is the load proxy. A single
+  penalty, the per-joint current exceedance summed over joints:
 
-  1. **Fault flag (default on, `PIPER_COLLISION_WEIGHT=0.5`).** The controller raises a
-     `collision` / `stall` status bit when *its own* protection trips. A fixed
-     `−PIPER_COLLISION_WEIGHT` on any flagged step — no calibration, and it fires
-     exactly when the controller decides it's a collision. **But it only works if crash
-     protection is enabled:** every joint ships at level 0 (OFF), so set a level first:
+  ```
+  penalty = -weight * Σ_j max(0, |current_j| - threshold_j)
+  ```
 
-     ```bash
-     python scripts/crash_protection.py            # show levels + live load
-     python scripts/crash_protection.py --set 3    # all joints, level 3 (0-8, persists)
-     ```
-
-  2. **Effort threshold (default off, `PIPER_CURRENT_WEIGHT=0`).** `−weight · max(0,
-     peak_effort − PIPER_CURRENT_THRESHOLD)`, a soft *pre-trip* signal from
-     `current × per-joint coefficient`. Robot- and pose-specific, so calibrate:
-     watch `/current` and `/shaping.peak_effort` in Foxglove during normal motion vs a
-     gentle deliberate stall, set the threshold between, then `PIPER_CURRENT_WEIGHT`
-     small (~0.02).
+  Per-joint thresholds because idle load differs a lot by joint — the shoulder
+  (`joint_0`) holds the arm's weight at ~0.65 A while the distal joints draw <0.3 A.
+  Set them with `PIPER_CURRENT_THRESHOLDS` (six amps values, `joint_0..5`; default
+  `1.5,1.0,1.0,1.0,1.0,1.0`) — a single value applies to all joints. Watch `/current`
+  in Foxglove during normal motion to place each threshold just above its idle draw,
+  and `/shaping.current_violation` / `collision_current_penalty` to see it fire.
 
   **Why current can read zero:** current only flows through *enabled* motors, so
-  `/current` is ~0 whenever the arm is disabled (`/shaping.arm_enabled` shows this).
-  Idle-but-enabled draw is ~0.03–0.28 A per joint; a collision spikes it well above.
-  There is no fixed current cutoff — the controller's shutoff is governed by the
-  per-joint protection level (0–8), which is why the fault flag is the more reliable
-  signal.
+  `/current` is ~0 whenever the arm is disabled — `/shaping.arm_enabled` shows this.
+  A collision spikes the loaded joint well above its idle draw.
+
+  The controller *also* has its own collision/stall protection (per-joint level 0–8,
+  off by default). It is **not** part of this reward, but the trip flag is surfaced as
+  `/shaping.collision_flag` for monitoring, and enabling it is worthwhile as a hard
+  safety stop:
+
+  ```bash
+  python scripts/crash_protection.py            # show levels + live load
+  python scripts/crash_protection.py --set 3    # all joints, level 3 (0-8, persists)
+  ```
 
 Both are deliberately small next to the +1 success. Two caveats worth knowing: the
 smoothness term is a per-step **bonus** (≥0), so in principle a frozen policy could
@@ -285,7 +286,7 @@ per finished episode.
 **The reward is broken out in tensorboard.** Rather than a single total, each term is
 its own scalar so you can see the shaping in isolation: `reward/task` (sparse grasp),
 `reward/smoothness`, `reward/collision_penalty`, `reward/gripper_penalty`, and
-`reward/total`, plus `episode/peak_effort_max` and `episode/length`. The learner
+`reward/total`, plus `episode/current_violation_max` and `episode/length`. The learner
 writes `train/*` and `episode/{reward,intervention_rate}`; the breakdown is computed
 per transition in the actor and written to the **same** tensorboard run (the launcher
 points both at one `PIPER_TB_DIR`, so their event files merge). `reward/task` =

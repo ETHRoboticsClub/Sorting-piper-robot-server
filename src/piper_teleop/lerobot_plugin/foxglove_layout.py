@@ -129,7 +129,7 @@ def build_layout(topics: list[str]) -> dict:
     if "/shaping" in available:  # each dense shaping term on one plot
         config["Plot!shaping"] = _plot_panel(
             ["/shaping.smoothness", "/shaping.gripper_penalty",
-             "/shaping.collision_current_penalty", "/shaping.peak_effort"]
+             "/shaping.collision_current_penalty", "/shaping.current_violation"]
         )
         right.append("Plot!shaping")
     if "/current" in available:  # per-joint motor current (torque proxy)
