@@ -424,10 +424,12 @@ class FoxgloveEpisodeLogger:
             t,
         )
 
-        # Per-joint motor current (torque proxy). Useful on its own and for
-        # calibrating the collision-current threshold.
-        currents = {k.replace(".current", ""): v for k, v in info.items() if k.endswith(".current")}
-        if currents:
+        # Per-joint motor current (torque proxy). Always published when the collision
+        # step ran (info carries arm_enabled), so the topic stays advertised even if
+        # a given read had no currents -- an absent topic shows as "does not exist".
+        if "arm_enabled" in info or any(k.endswith(".current") for k in info):
+            currents = {k.replace(".current", ""): v for k, v in info.items() if k.endswith(".current")}
+            currents["arm_enabled"] = float(info.get("arm_enabled") or 0.0)
             self._publish("/current", currents, t)
 
         buffer_status = self._read_buffer_status()

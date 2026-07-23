@@ -20,6 +20,7 @@ Enable it by setting ``processor.gripper.gripper_penalty`` in the config.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass, field
@@ -130,15 +131,27 @@ class CollisionCurrentPenaltyStep(ProcessorStep):
     threshold: float = DEFAULT_CURRENT_THRESHOLD
     collision_weight: float = DEFAULT_COLLISION_WEIGHT
 
+    _warned: bool = field(default=False, init=False, repr=False)
+
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         if self.current_reader is None:
             return transition
         try:
             currents = self.current_reader() or {}
-        except Exception:  # noqa: BLE001 - telemetry read must never break the rollout
-            return transition
-        if not currents:
-            return transition
+        except Exception as exc:  # noqa: BLE001 - telemetry read must never break the rollout
+            currents = {}
+            if not self._warned:
+                self._warned = True
+                logging.getLogger(__name__).warning("[REWARD] current reader failed: %s", exc)
+        if not currents and not self._warned:
+            self._warned = True
+            logging.getLogger(__name__).warning(
+                "[REWARD] current reader returned no data -- /current will be empty. "
+                "Is the arm connected and are motors reporting?"
+            )
+        # Note: we do NOT early-return on empty currents. The info fields below are
+        # always written so /current and the shaping signals stay advertised in
+        # Foxglove instead of vanishing (which surfaces as "topic does not exist").
 
         efforts = [abs(v) for k, v in currents.items() if k.endswith(".effort")]
         peak = max(efforts) if efforts else 0.0

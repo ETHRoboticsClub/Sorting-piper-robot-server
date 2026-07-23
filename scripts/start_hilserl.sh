@@ -270,10 +270,17 @@ TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
 
 # Install a layout whose panels match this config's cameras, so the live stream
 # comes up already wired instead of showing whatever layout was last selected.
+# Errors are shown (not swallowed) and the written file is verified -- a silently
+# missing layout is why Foxglove would come up blank.
 if [ "$DO_FG" -eq 1 ]; then
-	python -m piper_teleop.lerobot_plugin.foxglove_layout --config "$CONFIG" >/dev/null 2>&1 &&
-		ok "Foxglove layout installed (\"HIL-SERL Transitions\")" ||
-		warn "could not install the Foxglove layout"
+	LAYOUT_FILE="$HOME/.config/Foxglove/studio-datastores/layouts-local/lay_piperhilserl0001"
+	layout_err="$(python -m piper_teleop.lerobot_plugin.foxglove_layout --config "$CONFIG" 2>&1 >/dev/null)"
+	if [ -f "$LAYOUT_FILE" ]; then
+		ok "Foxglove layout installed (\"HIL-SERL Transitions\") -- select it once in Foxglove"
+	else
+		warn "Foxglove layout install FAILED: ${layout_err:-unknown error}"
+		warn "  fix, then: python -m piper_teleop.lerobot_plugin.foxglove_layout --config $CONFIG"
+	fi
 fi
 
 launch() { # launch <title> <command>
