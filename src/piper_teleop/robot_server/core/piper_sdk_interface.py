@@ -75,28 +75,84 @@ class PiperSDKInterface:
         return obs_dict
 
     def get_motor_currents(self) -> Dict[str, float]:
-        """Per-joint motor current (Amps) and effort (torque proxy) for the 6 arm joints.
+        """Per-joint load telemetry for the 6 arm joints, plus controller fault flags.
 
-        The Piper has no torque sensors, but the high-speed CAN feedback carries each
-        motor's current (unit 0.001 A), which the SDK converts to an effort estimate
-        via a per-joint coefficient (``cal_effort``). Both are returned. The gripper
-        motor is not part of this feedback, so it is omitted. Reads are non-blocking:
-        the SDK's background thread keeps the latest message cached.
+        The Piper has no torque sensors. Two proxies are exposed:
+
+        * **Current / effort** from the high-speed feedback (current unit 0.001 A;
+          effort = current x per-joint coefficient via ``cal_effort``). NOTE these read
+          ~0 while the motors are **disabled** (no current through an unpowered motor);
+          they only carry load once the arm is enabled and commanded.
+
+        * **Fault flags** from the low-speed feedback -- ``collision_status`` and
+          ``stall_status`` are the controller's OWN collision/stall decisions (trip
+          thresholds set by the per-joint collision-protection level), plus
+          ``driver_overcurrent``. These are valid regardless of enable state and are a
+          more reliable collision signal than any current magnitude. Aggregated into
+          ``any_collision`` / ``any_stall`` / ``any_overcurrent`` and ``arm_enabled``.
+
+        Reads are non-blocking (SDK background thread caches the latest messages).
+        The gripper motor is not part of this feedback.
         """
-        msg = self.piper.GetArmHighSpdInfoMsgs()
         out: Dict[str, float] = {}
+
+        hi = self.piper.GetArmHighSpdInfoMsgs()
         for i in range(6):
-            motor = getattr(msg, f"motor_{i + 1}", None)
+            motor = getattr(hi, f"motor_{i + 1}", None)
             if motor is None:
                 continue
-            current_a = float(motor.current) * 1e-3  # 0.001 A units -> A
+            out[f"joint_{i}.current"] = float(motor.current) * 1e-3  # 0.001 A -> A
             try:
-                effort = float(motor.cal_effort())
+                out[f"joint_{i}.effort"] = float(motor.cal_effort())
             except Exception:
-                effort = 0.0
-            out[f"joint_{i}.current"] = current_a
-            out[f"joint_{i}.effort"] = effort
+                out[f"joint_{i}.effort"] = 0.0
+
+        any_collision = any_stall = any_overcurrent = False
+        enabled = False
+        lo = self.piper.GetArmLowSpdInfoMsgs()
+        for i in range(6):
+            motor = getattr(lo, f"motor_{i + 1}", None)
+            foc = getattr(motor, "foc_status", None) if motor is not None else None
+            if foc is None:
+                continue
+            col = bool(getattr(foc, "collision_status", False))
+            stl = bool(getattr(foc, "stall_status", False))
+            over = bool(getattr(foc, "driver_overcurrent", False))
+            out[f"joint_{i}.collision"] = float(col)
+            out[f"joint_{i}.stall"] = float(stl)
+            any_collision = any_collision or col
+            any_stall = any_stall or stl
+            any_overcurrent = any_overcurrent or over
+            enabled = enabled or bool(getattr(foc, "driver_enable_status", False))
+
+        out["any_collision"] = float(any_collision)
+        out["any_stall"] = float(any_stall)
+        out["any_overcurrent"] = float(any_overcurrent)
+        out["arm_enabled"] = float(enabled)
         return out
+
+    def get_crash_protection_levels(self) -> Dict[str, int]:
+        """Per-joint collision-protection level (0-8; 0 = off, higher = more sensitive)."""
+        try:
+            msg = self.piper.GetCrashProtectionLevelFeedback()
+            fb = msg.crash_protection_level_feedback
+            return {f"joint_{i}": int(getattr(fb, f"joint_{i + 1}_protection_level", 0)) for i in range(6)}
+        except Exception:
+            return {}
+
+    def set_crash_protection_levels(self, levels) -> None:
+        """Set the per-joint collision-protection level (0-8; 0 = off).
+
+        Without this the controller does not detect collisions at all, so the
+        ``collision_status`` fault flag never trips. ``levels`` is a single int applied
+        to all six joints, or a 6-element sequence. Higher = more sensitive (trips at a
+        lower load). This is a persistent controller setting, so set it once.
+        """
+        if isinstance(levels, (int, float)):
+            levels = [int(levels)] * 6
+        levels = [max(0, min(8, int(v))) for v in list(levels)[:6]]
+        levels += [0] * (6 - len(levels))
+        self.piper.CrashProtectionConfig(*levels)
 
     def get_end_effector_pose(self) -> Dict[str, float]:
         """

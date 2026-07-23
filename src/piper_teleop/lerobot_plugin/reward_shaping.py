@@ -37,11 +37,14 @@ TELEOP_ACTION_KEY = "teleop_action"
 DEFAULT_WEIGHT = float(os.environ.get("PIPER_SMOOTH_WEIGHT", "0.005"))
 DEFAULT_SCALE = float(os.environ.get("PIPER_SMOOTH_SCALE", "0.5"))
 
-# Collision-current penalty. The Piper has no torque sensors; motor current (via
-# effort = current x per-joint coefficient) is the proxy. A collision with an
-# immovable object shows up as a sustained effort spike. The threshold MUST be
-# calibrated from observed values (watch /current in Foxglove during normal motion
-# and a gentle deliberate stall), so this is OFF by default (weight 0).
+# Collision penalty. Two signals, since the Piper has no torque sensor:
+#   1. Fault flags -- the controller's OWN collision/stall decision, valid even while
+#      motors are (dis)abled. A fixed penalty per flagged step. On by default: it needs
+#      no calibration and fires exactly when the controller detects a collision.
+#   2. Effort threshold -- current x coefficient as a soft *pre-trip* signal. Reads ~0
+#      while the arm is disabled, so it is only meaningful under load, and its
+#      threshold must be calibrated; OFF by default (weight 0).
+DEFAULT_COLLISION_WEIGHT = float(os.environ.get("PIPER_COLLISION_WEIGHT", "0.5"))
 DEFAULT_CURRENT_WEIGHT = float(os.environ.get("PIPER_CURRENT_WEIGHT", "0"))
 DEFAULT_CURRENT_THRESHOLD = float(os.environ.get("PIPER_CURRENT_THRESHOLD", "3.0"))
 
@@ -106,22 +109,26 @@ class ActionSmoothnessRewardStep(ProcessorStep):
 
 @dataclass
 class CollisionCurrentPenaltyStep(ProcessorStep):
-    """Penalise motor-effort spikes as a proxy for collision with an immovable object.
+    """Penalise collisions with an immovable object, via two proxy signals.
 
-    Effort per joint is ``current x coefficient`` from the Piper's high-speed CAN
-    feedback (no torque sensor exists). The penalty is applied to the **peak** joint
-    effort above ``threshold`` -- collisions localise to whichever joint is loaded --
-    scaled by ``weight``:  ``reward -= weight * max(0, peak_effort - threshold)``.
+    1. **Fault flags** (``collision_weight``, default on): the controller's own
+       ``collision``/``stall`` decision from the low-speed feedback. A fixed
+       ``-collision_weight`` on any flagged step -- no calibration, valid even while
+       the motors are disabled.
+    2. **Effort threshold** (``weight``, default off): ``-weight * max(0, peak_effort
+       - threshold)`` as a soft pre-trip signal. Effort reads ~0 while the arm is
+       disabled, so this only bites under load and needs a calibrated threshold.
 
-    ``current_reader`` returns the per-joint ``{joint_i.current, joint_i.effort}``
-    dict (``PiperFollower.get_motor_currents``); the peak effort and per-joint current
-    are always written to ``info`` (even at weight 0) so the threshold can be
-    calibrated from Foxglove before the penalty is switched on.
+    ``current_reader`` (``PiperFollower.get_motor_currents``) returns per-joint
+    ``current``/``effort`` plus aggregated ``any_collision`` / ``any_stall`` /
+    ``arm_enabled``. Everything is written to ``info`` (even at weight 0) so the
+    signals can be watched in Foxglove before the penalties are tuned.
     """
 
     current_reader: Any = None
     weight: float = DEFAULT_CURRENT_WEIGHT
     threshold: float = DEFAULT_CURRENT_THRESHOLD
+    collision_weight: float = DEFAULT_COLLISION_WEIGHT
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         if self.current_reader is None:
@@ -135,8 +142,12 @@ class CollisionCurrentPenaltyStep(ProcessorStep):
 
         efforts = [abs(v) for k, v in currents.items() if k.endswith(".effort")]
         peak = max(efforts) if efforts else 0.0
-        penalty = -self.weight * max(0.0, peak - self.threshold) if self.weight > 0.0 else 0.0
+        effort_penalty = -self.weight * max(0.0, peak - self.threshold) if self.weight > 0.0 else 0.0
 
+        collided = bool(currents.get("any_collision") or currents.get("any_stall"))
+        flag_penalty = -self.collision_weight if (collided and self.collision_weight > 0.0) else 0.0
+
+        penalty = effort_penalty + flag_penalty
         new_transition = transition.copy()
         if penalty:
             new_transition[TransitionKey.REWARD] = (
@@ -145,6 +156,8 @@ class CollisionCurrentPenaltyStep(ProcessorStep):
         info = dict(new_transition.get(TransitionKey.INFO, {}) or {})
         info["peak_effort"] = peak
         info["collision_current_penalty"] = penalty
+        info["collision_flag"] = float(collided)
+        info["arm_enabled"] = float(currents.get("arm_enabled") or 0.0)
         for key, value in currents.items():  # per-joint current for calibration
             if key.endswith(".current"):
                 info[key] = value
@@ -155,7 +168,7 @@ class CollisionCurrentPenaltyStep(ProcessorStep):
         pass
 
     def get_config(self) -> dict[str, Any]:
-        return {"weight": self.weight, "threshold": self.threshold}
+        return {"weight": self.weight, "threshold": self.threshold, "collision_weight": self.collision_weight}
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]

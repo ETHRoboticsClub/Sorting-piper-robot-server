@@ -140,29 +140,33 @@ dense terms shape *how* the arm gets there:
   (`PIPER_SMOOTH_SCALE`, default `0.5`) are env vars; `PIPER_SMOOTH_WEIGHT=0` disables
   it. Inserted before batching, only in the actor's pipeline.
 
-- **Collision-current penalty** — the Piper has no torque sensor, but its high-speed
-  CAN feedback carries each joint's motor current, which the SDK turns into an effort
-  estimate (`current × per-joint coefficient`). A collision with an immovable object
-  shows up as a sustained effort spike, so `CollisionCurrentPenaltyStep` subtracts
-  `weight · max(0, peak_joint_effort − threshold)`. Because normal-vs-collision effort
-  values are robot- and pose-specific, this is **off by default** (`PIPER_CURRENT_WEIGHT=0`):
-  the step still streams every joint's current to Foxglove (`/current`) and the peak
-  effort to `/shaping`, so you calibrate first, then enable. Threshold via
-  `PIPER_CURRENT_THRESHOLD` (effort units).
+- **Collision penalty** — the Piper has no torque sensor, so `CollisionCurrentPenaltyStep`
+  uses two proxies from the CAN feedback:
 
-  **Calibration:** run a normal session, watch `/current` and `/shaping.peak_effort` in
-  Foxglove during ordinary motion, then gently drive the arm into a fixed object and
-  note the spike. Set `PIPER_CURRENT_THRESHOLD` between the two and
-  `PIPER_CURRENT_WEIGHT` to a small value (start ~0.02).
+  1. **Fault flag (default on, `PIPER_COLLISION_WEIGHT=0.5`).** The controller raises a
+     `collision` / `stall` status bit when *its own* protection trips. A fixed
+     `−PIPER_COLLISION_WEIGHT` on any flagged step — no calibration, and it fires
+     exactly when the controller decides it's a collision. **But it only works if crash
+     protection is enabled:** every joint ships at level 0 (OFF), so set a level first:
 
-  There is no fixed current cutoff to target: the Piper controller trips its **own**
-  collision/stall protection based on a per-joint **collision-protection level (0–8,
-  configurable; 0 = off, higher = more sensitive)**, and reports the trip as a fault
-  bit in the low-speed CAN feedback (`collision protection status`, `stalling
-  protection status`, `driver over-current`). That flag is a more reliable collision
-  signal than any current magnitude — a natural next step is to penalise on the flag
-  directly (and/or read the configured level) rather than a hand-tuned effort
-  threshold.
+     ```bash
+     python scripts/crash_protection.py            # show levels + live load
+     python scripts/crash_protection.py --set 3    # all joints, level 3 (0-8, persists)
+     ```
+
+  2. **Effort threshold (default off, `PIPER_CURRENT_WEIGHT=0`).** `−weight · max(0,
+     peak_effort − PIPER_CURRENT_THRESHOLD)`, a soft *pre-trip* signal from
+     `current × per-joint coefficient`. Robot- and pose-specific, so calibrate:
+     watch `/current` and `/shaping.peak_effort` in Foxglove during normal motion vs a
+     gentle deliberate stall, set the threshold between, then `PIPER_CURRENT_WEIGHT`
+     small (~0.02).
+
+  **Why current can read zero:** current only flows through *enabled* motors, so
+  `/current` is ~0 whenever the arm is disabled (`/shaping.arm_enabled` shows this).
+  Idle-but-enabled draw is ~0.03–0.28 A per joint; a collision spikes it well above.
+  There is no fixed current cutoff — the controller's shutoff is governed by the
+  per-joint protection level (0–8), which is why the fault flag is the more reliable
+  signal.
 
 Both are deliberately small next to the +1 success. Two caveats worth knowing: the
 smoothness term is a per-step **bonus** (≥0), so in principle a frozen policy could

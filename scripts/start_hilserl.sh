@@ -263,6 +263,7 @@ ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT PIPER_WARM_START_POLICY=$WARM_POLICY \
 	PIPER_SMOOTH_WEIGHT=${PIPER_SMOOTH_WEIGHT:-0.005} PIPER_SMOOTH_SCALE=${PIPER_SMOOTH_SCALE:-0.5} \
 	PIPER_CURRENT_WEIGHT=${PIPER_CURRENT_WEIGHT:-0} PIPER_CURRENT_THRESHOLD=${PIPER_CURRENT_THRESHOLD:-3.0} \
+	PIPER_COLLISION_WEIGHT=${PIPER_COLLISION_WEIGHT:-0.5} \
 	PIPER_TB_DIR=$(printf '%q' "$TB_RUN_DIR") \
 	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
