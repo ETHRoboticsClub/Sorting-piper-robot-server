@@ -502,7 +502,17 @@ def _action_smoothness_reward(gm) -> None:
         return env_processor, action_processor
 
     make_processors._piper_smoothness = True
-    gm.make_processors = make_processors
+    # actor.py does `from .gym_manipulator import make_processors`, binding by value,
+    # so patching only gym_manipulator leaves the actor calling the original -- with no
+    # shaping steps. Rebind everywhere it landed (this is the env-building entrypoint;
+    # the actor is the process that actually runs it).
+    for modname in ("lerobot.rl.gym_manipulator", "lerobot.rl.actor"):
+        try:
+            module = importlib.import_module(modname)
+        except Exception:  # noqa: BLE001
+            continue
+        if hasattr(module, "make_processors"):
+            module.make_processors = make_processors
 
 
 def _warm_start_policy_weights() -> None:
