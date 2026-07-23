@@ -9,7 +9,7 @@
       "cameras": {
         "wrist1": {
           "type": "intelrealsense",
-          "serial_number_or_name": "234322305361",
+          "serial_number_or_name": "030422250224",
           "fps": 30,
           "width": 640,
           "height": 480

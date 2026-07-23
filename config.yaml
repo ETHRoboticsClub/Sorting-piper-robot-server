@@ -50,7 +50,7 @@ cameras:
   wrist1:
     type: monocular
     backend: realsense
-    serial_number: "234322305361"   # wrist cam of the conveyor system
+    serial_number: "030422250224"   # wrist cam (new robot, swapped 2026-07-23; old was 234322305361)
     # alternatives: 030422250224 (second arm), 126122270287 (D405)
     realsense_auto_exposure: true
     mode: recording
