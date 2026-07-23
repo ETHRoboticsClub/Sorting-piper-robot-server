@@ -519,6 +519,29 @@ death or hang, the **Options** pause (which halts the rollout, so transitions st
 and any actor-side fault-stop. The buffer and policy are untouched, so it resumes
 cleanly. `PIPER_STALE_S=0` disables it.
 
+### Collision back-out (reactive recovery)
+
+A crash is predictable: when any joint's current spikes past a few amps, the arm is
+pushing into something. `_collision_backout` (in `patches.py`, actor-side) keeps a
+short ring of the recent joint-target commands and, when the peak joint current
+exceeds `PIPER_BACKOUT_CURRENT` (amps, default `3`), **replays them in reverse** to
+retreat the arm out of the collision, then **ends the episode** (`done=True`). The
+normal reset re-homes the arm and resets the EE reference, so the next episode starts
+from a safe pose — and, with the threshold tuned, without a crash.
+
+Ending the episode (rather than continuing) keeps the buffer clean: `done=True` means
+the critic never bootstraps off the backed-out next-state, and the collision reads as
+a terminal failure. Config: `PIPER_BACKOUT_CURRENT` (trigger amps), `PIPER_BACKOUT_STEPS`
+(ring length, default 6), `PIPER_BACKOUT_DT` (seconds between replay commands, default
+0.05), `PIPER_BACKOUT_PENALTY` (added to the terminal reward, default 0);
+`PIPER_BACKOUT=0` disables it. The ring is cleared on every reset so a new episode
+never retreats into the previous one's poses.
+
+Tune the trigger by watching `/current` in Foxglove: idle is ~0.03–0.65 A, a collision
+spikes well above 3 A, so the default catches real collisions while ignoring normal
+motion. This is complementary to the per-step [collision penalty](#reward-shaping) —
+the penalty teaches avoidance over time; the back-out is the immediate hardware reflex.
+
 ### Manual task reward
 
 If the YOLO grasp reward misses a real success, press **Square** (episode success):

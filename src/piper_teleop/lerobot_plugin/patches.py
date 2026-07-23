@@ -33,6 +33,7 @@ def apply_lerobot_patches() -> None:
     _reset_intervention_each_episode()
     _informative_learner_logging()
     _gamepad_pause(gm)
+    _collision_backout(gm)
     _foxglove_episode_logging(gm)
     _actor_reward_breakdown(gm)
     _warm_start_replay_buffer()
@@ -259,6 +260,105 @@ def _foxglove_episode_logging(gm) -> None:
             module.reset_and_build_transition = reset_and_build_transition
 
     atexit.register(lambda: holder["recorder"] and holder["recorder"].close())
+
+
+def _collision_backout(gm) -> None:
+    """Reactive collision recovery: retreat on over-current, then end the episode.
+
+    Any joint drawing more than ``PIPER_BACKOUT_CURRENT`` amps means the arm is
+    pushing into something. We keep a short ring of the recent joint-target commands
+    and, on trigger, replay them in **reverse** to back the arm out of the collision,
+    then end the episode as a failure (``done=True``). The normal episode reset then
+    re-homes the arm and resets the EE reference, so the next episode starts clean from
+    a safe pose -- and, if the thresholds are tuned, without a crash.
+
+    Terminating (rather than continuing) keeps the replay buffer clean: ``done=True``
+    means the critic never bootstraps off the backed-out next-state.
+
+    ``PIPER_BACKOUT=0`` disables. Config: ``PIPER_BACKOUT_CURRENT`` (amps, default 3),
+    ``PIPER_BACKOUT_STEPS`` (ring length, default 6), ``PIPER_BACKOUT_DT`` (seconds
+    between replay commands, default 0.05), ``PIPER_BACKOUT_PENALTY`` (added to the
+    terminal reward, default 0).
+    """
+    import logging
+    import os
+    import time
+    from collections import deque
+
+    if os.environ.get("PIPER_BACKOUT", "1") == "0":
+        return
+    if getattr(gm.RobotEnv.step, "_piper_backout", False):
+        return
+
+    threshold = float(os.environ.get("PIPER_BACKOUT_CURRENT", "3.0"))
+    ring_len = max(1, int(os.environ.get("PIPER_BACKOUT_STEPS", "6")))
+    dt = float(os.environ.get("PIPER_BACKOUT_DT", "0.05"))
+    penalty = float(os.environ.get("PIPER_BACKOUT_PENALTY", "0"))
+
+    log = logging.getLogger(__name__)
+    state = {"ring": deque(maxlen=ring_len), "count": 0}
+
+    def _peak_current(robot):
+        reader = getattr(robot, "get_motor_currents", None)
+        if not callable(reader):
+            return 0.0
+        try:
+            currents = reader() or {}
+        except Exception:  # noqa: BLE001
+            return 0.0
+        return max((abs(v) for k, v in currents.items() if k.endswith(".current")), default=0.0)
+
+    _orig_step = gm.RobotEnv.step
+
+    def step(self, action):
+        robot = getattr(self, "robot", None)
+        peak = _peak_current(robot) if robot is not None else 0.0
+
+        if robot is not None and peak > threshold and len(state["ring"]) >= 1:
+            state["count"] += 1
+            log.warning(
+                "[BACKOUT] joint current %.2f A > %.2f A -- retreating %d steps, ending episode (#%d)",
+                peak, threshold, len(state["ring"]), state["count"],
+            )
+            motors = list(robot.bus.motors.keys())
+            safe = None
+            for past in reversed(state["ring"]):  # most-recent -> oldest = retreat
+                targets = {f"{m}.pos": float(past[i]) for i, m in enumerate(motors) if i < len(past)}
+                try:
+                    robot.send_action(targets)
+                except Exception as exc:  # noqa: BLE001 - keep the arm safe even if a send fails
+                    log.warning("[BACKOUT] send failed mid-retreat: %s", exc)
+                    break
+                safe = past
+                time.sleep(dt)
+            state["ring"].clear()
+            # Command the retreated pose as this step, and force the episode to end.
+            obs, reward, _terminated, truncated, info = _orig_step(self, safe if safe is not None else action)
+            info = dict(info or {})
+            info["collision_backout"] = True
+            return obs, reward + penalty, True, truncated, info
+
+        try:
+            state["ring"].append([float(x) for x in action])
+        except Exception:  # noqa: BLE001
+            pass
+        return _orig_step(self, action)
+
+    step._piper_backout = True
+    if getattr(_orig_step, "_piper_pausable", False):  # carry the pause guard forward
+        step._piper_pausable = True
+    gm.RobotEnv.step = step
+
+    # Clear the ring on reset so a new episode never retreats into the previous one's poses.
+    if not getattr(gm.RobotEnv.reset, "_piper_backout", False):
+        _orig_reset = gm.RobotEnv.reset
+
+        def reset(self, *args, **kwargs):
+            state["ring"].clear()
+            return _orig_reset(self, *args, **kwargs)
+
+        reset._piper_backout = True
+        gm.RobotEnv.reset = reset
 
 
 def _gamepad_pause(gm) -> None:
