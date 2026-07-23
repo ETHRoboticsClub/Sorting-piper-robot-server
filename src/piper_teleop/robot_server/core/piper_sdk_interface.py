@@ -74,6 +74,30 @@ class PiperSDKInterface:
 
         return obs_dict
 
+    def get_motor_currents(self) -> Dict[str, float]:
+        """Per-joint motor current (Amps) and effort (torque proxy) for the 6 arm joints.
+
+        The Piper has no torque sensors, but the high-speed CAN feedback carries each
+        motor's current (unit 0.001 A), which the SDK converts to an effort estimate
+        via a per-joint coefficient (``cal_effort``). Both are returned. The gripper
+        motor is not part of this feedback, so it is omitted. Reads are non-blocking:
+        the SDK's background thread keeps the latest message cached.
+        """
+        msg = self.piper.GetArmHighSpdInfoMsgs()
+        out: Dict[str, float] = {}
+        for i in range(6):
+            motor = getattr(msg, f"motor_{i + 1}", None)
+            if motor is None:
+                continue
+            current_a = float(motor.current) * 1e-3  # 0.001 A units -> A
+            try:
+                effort = float(motor.cal_effort())
+            except Exception:
+                effort = 0.0
+            out[f"joint_{i}.current"] = current_a
+            out[f"joint_{i}.effort"] = effort
+        return out
+
     def get_end_effector_pose(self) -> Dict[str, float]:
         """
         Returns the current end-effector pose as a sequence of floats.

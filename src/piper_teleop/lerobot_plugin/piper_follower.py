@@ -147,6 +147,20 @@ class PiperFollower(Robot):
             obs[cam_key] = cam.read_latest()
         return obs
 
+    def get_motor_currents(self) -> dict[str, float]:
+        """Per-joint current (A) and effort (torque proxy) for the 6 arm joints.
+
+        Empty dict if unavailable, so callers (e.g. the collision-current reward)
+        degrade gracefully rather than crash. See ``PiperSDKInterface.get_motor_currents``.
+        """
+        if self._sdk is None:
+            return {}
+        try:
+            return self._sdk.get_motor_currents()
+        except Exception as exc:  # noqa: BLE001 - telemetry must never break the control loop
+            logger.debug("get_motor_currents failed: %s", exc)
+            return {}
+
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         if self._sdk is None:
             raise DeviceNotConnectedError(f"{self} is not connected.")

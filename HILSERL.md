@@ -140,6 +140,21 @@ dense terms shape *how* the arm gets there:
   (`PIPER_SMOOTH_SCALE`, default `0.5`) are env vars; `PIPER_SMOOTH_WEIGHT=0` disables
   it. Inserted before batching, only in the actor's pipeline.
 
+- **Collision-current penalty** — the Piper has no torque sensor, but its high-speed
+  CAN feedback carries each joint's motor current, which the SDK turns into an effort
+  estimate (`current × per-joint coefficient`). A collision with an immovable object
+  shows up as a sustained effort spike, so `CollisionCurrentPenaltyStep` subtracts
+  `weight · max(0, peak_joint_effort − threshold)`. Because normal-vs-collision effort
+  values are robot- and pose-specific, this is **off by default** (`PIPER_CURRENT_WEIGHT=0`):
+  the step still streams every joint's current to Foxglove (`/current`) and the peak
+  effort to `/shaping`, so you calibrate first, then enable. Threshold via
+  `PIPER_CURRENT_THRESHOLD` (effort units).
+
+  **Calibration:** run a normal session, watch `/current` and `/shaping.peak_effort` in
+  Foxglove during ordinary motion, then gently drive the arm into a fixed object and
+  note the spike. Set `PIPER_CURRENT_THRESHOLD` between the two and
+  `PIPER_CURRENT_WEIGHT` to a small value (start ~0.02).
+
 Both are deliberately small next to the +1 success. Two caveats worth knowing: the
 smoothness term is a per-step **bonus** (≥0), so in principle a frozen policy could
 farm it — the sparse reward and the episode time limit are what stop that, which is
@@ -338,10 +353,15 @@ Everything lands on one scrubbable timeline:
 | `/reward` | step reward + running episode return |
 | `/control` | `is_intervention` (plot `value` for a policy-vs-human band) |
 | `/grasp` | YOLO class / confidence / success, when the check ran |
+| `/shaping` | each dense reward term: smoothness, gripper penalty, collision penalty, peak effort |
+| `/current` | per-joint motor current (torque proxy) — for watching load and calibrating the collision threshold |
+| `/buffer` | replay-buffer fill `fraction` / count / capacity / GB — bridged from the learner |
 
 Only the cameras actually in the observation appear — with the default wrist-only
 config that is `wrist1` alone; add a camera to `env.robot.cameras` and it shows up
-here too.
+here too. `/buffer` is a learner-side metric: the learner writes it to a fixed local
+file (`outputs/live_buffer_status.json`) which the actor's Foxglove server reads, so
+it only updates while the learner is running.
 
 **Overhead.** The control loop only pays a dict copy and a queue put; JPEG encoding,
 file I/O and the live publish all run on one background thread behind a bounded queue

@@ -110,6 +110,13 @@ class FoxgloveEpisodeLogger:
         self._live_channels: dict[str, Any] = {}
         self._live = os.environ.get("PIPER_FG_LIVE", "1") != "0"
         self._live_port = int(os.environ.get("PIPER_FG_PORT", "8765"))
+
+        # Buffer fill lives in the learner; it drops this file, the actor's logger
+        # reads it (same machine, fixed path) so /buffer appears alongside the
+        # rollout topics. Cached and re-read at most ~once/second.
+        self._buffer_status_path = os.environ.get("PIPER_BUFFER_STATUS", "outputs/live_buffer_status.json")
+        self._buffer_status: dict | None = None
+        self._buffer_status_read_ns = 0
         self._episode = 0
         self._step = 0
         self._return = 0.0
@@ -344,6 +351,19 @@ class FoxgloveEpisodeLogger:
         ).encode()
         self._emit(topic, payload, stamp_ns, "foxglove.CompressedImage", _IMAGE_SCHEMA)
 
+    def _read_buffer_status(self) -> dict | None:
+        """Latest learner buffer stats from the shared file, cached ~1 s."""
+        now = time.time_ns()
+        if now - self._buffer_status_read_ns < 1_000_000_000:
+            return self._buffer_status
+        self._buffer_status_read_ns = now
+        try:
+            with open(self._buffer_status_path) as handle:
+                self._buffer_status = json.load(handle)
+        except Exception:  # noqa: BLE001 - absent until the learner writes it
+            pass  # keep the last value rather than dropping the topic
+        return self._buffer_status
+
     def _write_step(self, s: dict) -> None:
         # No early return on a missing MCAP writer: _emit() still streams live, so a
         # viewer attached between episodes keeps receiving data.
@@ -388,6 +408,29 @@ class FoxgloveEpisodeLogger:
                 },
                 t,
             )
+
+        # Reward-shaping breakdown: each dense term, so their scale vs the sparse
+        # task reward is visible on one plot.
+        self._publish(
+            "/shaping",
+            {
+                "smoothness": float(info.get("action_smoothness_reward") or 0.0),
+                "gripper_penalty": float(info.get("discrete_penalty") or 0.0),
+                "collision_current_penalty": float(info.get("collision_current_penalty") or 0.0),
+                "peak_effort": float(info.get("peak_effort") or 0.0),
+            },
+            t,
+        )
+
+        # Per-joint motor current (torque proxy). Useful on its own and for
+        # calibrating the collision-current threshold.
+        currents = {k.replace(".current", ""): v for k, v in info.items() if k.endswith(".current")}
+        if currents:
+            self._publish("/current", currents, t)
+
+        buffer_status = self._read_buffer_status()
+        if buffer_status is not None:
+            self._publish("/buffer", buffer_status, t)
 
 
 def _clean_info(info: dict | None) -> dict:

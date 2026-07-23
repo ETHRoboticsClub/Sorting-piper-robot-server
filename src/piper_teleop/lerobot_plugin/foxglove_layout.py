@@ -118,13 +118,27 @@ def build_layout(topics: list[str]) -> dict:
         config[pid] = _image_panel("/grasp/overlay")
         left.append(pid)
 
-    # Right column: reward/intervention plot, then the numeric detail panels.
+    # Right column: reward/intervention plot, the shaping/effort plots, then details.
     right: list[str] = []
     plot_paths = [p for p in ("/reward.reward", "/reward.episode_return", "/control.value")
                   if p.split(".")[0] in available]
     if plot_paths:
         config["Plot!rewards"] = _plot_panel(plot_paths)
         right.append("Plot!rewards")
+
+    if "/shaping" in available:  # each dense shaping term on one plot
+        config["Plot!shaping"] = _plot_panel(
+            ["/shaping.smoothness", "/shaping.gripper_penalty",
+             "/shaping.collision_current_penalty", "/shaping.peak_effort"]
+        )
+        right.append("Plot!shaping")
+    if "/current" in available:  # per-joint motor current (torque proxy)
+        config["Plot!current"] = _plot_panel([f"/current.joint_{i}" for i in range(6)])
+        right.append("Plot!current")
+    if "/buffer" in available:
+        config["Plot!buffer"] = _plot_panel(["/buffer.fraction"])
+        right.append("Plot!buffer")
+
     for topic in ("/state", "/action", "/grasp"):
         if topic in available:
             pid = f"RawMessages!{_safe(topic)}"
@@ -162,7 +176,10 @@ def build_layout(topics: list[str]) -> dict:
 
 
 #: Everything the logger publishes besides the per-camera image topics.
-BASE_TOPICS = ["/grasp/overlay", "/state", "/action", "/reward", "/control", "/grasp", "/episode"]
+BASE_TOPICS = [
+    "/grasp/overlay", "/state", "/action", "/reward", "/control", "/grasp", "/episode",
+    "/shaping", "/current", "/buffer",
+]
 
 
 def topics_from_config(config_path: str) -> list[str]:

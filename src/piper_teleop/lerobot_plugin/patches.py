@@ -122,12 +122,17 @@ def _foxglove_episode_logging(gm) -> None:
         new_transition = _orig_step(env, transition, action, env_processor, action_processor)
         try:
             complementary = new_transition.get(TransitionKey.COMPLEMENTARY_DATA) or {}
+            # The gripper penalty lands in complementary_data, not info; surface it so
+            # Foxglove's /shaping shows it next to the other dense terms.
+            info = dict(new_transition.get(TransitionKey.INFO) or {})
+            if "discrete_penalty" in complementary:
+                info.setdefault("discrete_penalty", complementary["discrete_penalty"])
             recorder().log_transition(
                 observation=new_transition.get(TransitionKey.OBSERVATION),
                 # the action actually executed -- the teleop one during an intervention
                 action=complementary.get("teleop_action", action),
                 reward=new_transition.get(TransitionKey.REWARD, 0.0),
-                info=new_transition.get(TransitionKey.INFO),
+                info=info,
                 done=bool(new_transition.get(TransitionKey.DONE, False))
                 or bool(new_transition.get(TransitionKey.TRUNCATED, False)),
             )
@@ -339,37 +344,66 @@ def _action_smoothness_reward(gm) -> None:
     import logging
     import os
 
-    if float(os.environ.get("PIPER_SMOOTH_WEIGHT", "0.005")) <= 0.0:
-        logging.getLogger(__name__).info("[REWARD] action-smoothness shaping off (PIPER_SMOOTH_WEIGHT<=0)")
-        return
+    smooth_weight = float(os.environ.get("PIPER_SMOOTH_WEIGHT", "0.005"))
 
     if getattr(gm.make_processors, "_piper_smoothness", False):
         return
 
     from lerobot.processor.batch_processor import AddBatchDimensionProcessorStep
 
-    from .reward_shaping import ActionSmoothnessRewardStep
+    from .reward_shaping import ActionSmoothnessRewardStep, CollisionCurrentPenaltyStep
 
     _orig_make_processors = gm.make_processors
     log = logging.getLogger(__name__)
 
-    def make_processors(*args, **kwargs):
-        env_processor, action_processor = _orig_make_processors(*args, **kwargs)
+    def make_processors(env, teleop_device, cfg, device="cpu", *args, **kwargs):
+        env_processor, action_processor = _orig_make_processors(
+            env, teleop_device, cfg, device, *args, **kwargs
+        )
         try:
             steps = env_processor.steps
-            step = ActionSmoothnessRewardStep()
             index = next(
                 (i for i, s in enumerate(steps) if isinstance(s, AddBatchDimensionProcessorStep)),
                 len(steps),
             )
-            steps.insert(index, step)
-            log.info(
-                "[REWARD] action-smoothness shaping on: weight=%.4g scale=%.4g (exp kernel on Δaction)",
-                step.weight,
-                step.scale,
-            )
+            new_steps = []
+            if smooth_weight > 0.0:
+                new_steps.append(ActionSmoothnessRewardStep())
+
+            # Collision-current penalty: bind the reader to the connected robot, so the
+            # step pulls per-joint effort each transition. Always inserted (it streams
+            # current to info even at weight 0, for threshold calibration); only the
+            # penalty term is gated on weight.
+            robot = getattr(env, "robot", None) or getattr(getattr(env, "unwrapped", None), "robot", None)
+            reader = getattr(robot, "get_motor_currents", None)
+            if callable(reader):
+                new_steps.append(CollisionCurrentPenaltyStep(current_reader=reader))
+
+            for offset, step in enumerate(new_steps):
+                steps.insert(index + offset, step)
+
+            smooth = next((s for s in new_steps if isinstance(s, ActionSmoothnessRewardStep)), None)
+            if smooth is not None:
+                log.info(
+                    "[REWARD] smoothness on: weight=%.4g scale=%.4g (exp kernel on Δaction)",
+                    smooth.weight,
+                    smooth.scale,
+                )
+            else:
+                log.info("[REWARD] smoothness off (PIPER_SMOOTH_WEIGHT<=0)")
+            cur = next((s for s in new_steps if isinstance(s, CollisionCurrentPenaltyStep)), None)
+            if cur is not None:
+                state = "ON" if cur.weight > 0 else "OFF (streaming current for calibration)"
+                log.info(
+                    "[REWARD] collision-current penalty %s: weight=%.4g threshold=%.4g effort",
+                    state,
+                    cur.weight,
+                    cur.threshold,
+                )
+            else:
+                log.info("[REWARD] collision-current penalty unavailable (robot exposes no currents)")
         except Exception as exc:  # noqa: BLE001 - shaping must never break env construction
-            log.warning("[REWARD] could not add smoothness shaping (%s: %s)", type(exc).__name__, exc)
+            log.warning("[REWARD] could not add reward shaping (%s: %s)", type(exc).__name__, exc)
         return env_processor, action_processor
 
     make_processors._piper_smoothness = True
@@ -511,6 +545,33 @@ def _tensorboard_writer():
     return writer
 
 
+def _write_buffer_status(count: int, capacity: int, allocated_bytes: int) -> None:
+    """Drop learner buffer stats to a shared file for the actor's Foxglove /buffer.
+
+    The buffer lives in the learner but the Foxglove server runs in the actor, so
+    this is the cross-process bridge -- a fixed local path, written atomically so a
+    concurrent reader never sees a half-written file. Best-effort.
+    """
+    import json
+    import os
+
+    path = os.environ.get("PIPER_BUFFER_STATUS", "outputs/live_buffer_status.json")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        payload = {
+            "count": int(count),
+            "capacity": int(capacity),
+            "fraction": (count / capacity) if capacity else 0.0,
+            "gb": allocated_bytes / 1e9,
+        }
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as handle:
+            json.dump(payload, handle)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - purely informational
+        pass
+
+
 def _informative_learner_logging() -> None:
     """Replace the learner's per-iteration Hz spam with a useful periodic summary.
 
@@ -579,6 +640,7 @@ def _informative_learner_logging() -> None:
                         allocated = buffer_bytes(online)
                         if allocated:
                             parts.append(f"{allocated / 1e9:.2f}GB")
+                        _write_buffer_status(len(online), cap, allocated)  # -> actor's Foxglove /buffer
                     except Exception:  # noqa: BLE001
                         pass
                 offline = getattr(self.data_mixer, "offline_buffer", None)
