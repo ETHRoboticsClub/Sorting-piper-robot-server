@@ -121,6 +121,32 @@ intervention toggle starts every episode OFF instead of carrying over, a
 **gamepad pause** on `RobotEnv.step` (Options freezes the rollout), and
 **informative learner logging** + tensorboard (see below).
 
+### Reward shaping
+
+On top of the sparse task reward (+1 on a confirmed PET/aluminium grasp) two small
+dense terms shape *how* the arm gets there:
+
+- **Gripper-change penalty** — LeRobot's built-in `GripperPenaltyProcessorStep`, which
+  fires only on an open↔closed transition (not on "stay" or saturating commands) and
+  writes `complementary_info.discrete_penalty`, consumed by the SAC **discrete**
+  critic. Enabled via `processor.gripper.gripper_penalty` (currently `-0.05`). This is
+  the same `discrete_penalty` column warm start and the demos must carry.
+- **Action smoothness** — `ActionSmoothnessRewardStep` (in the plugin) adds
+  `weight · exp(-‖Δa‖ / scale)` to the reward: full `weight` when the policy repeats
+  its action, decaying to 0 as the step-to-step change grows. It reads the normalized
+  6-DOF policy action (the vector the buffer stores, so the scale is independent of
+  `end_effector_step_sizes`); the gripper channel is excluded, since the penalty above
+  covers it. `weight` (`PIPER_SMOOTH_WEIGHT`, default `0.005`) and `scale`
+  (`PIPER_SMOOTH_SCALE`, default `0.5`) are env vars; `PIPER_SMOOTH_WEIGHT=0` disables
+  it. Inserted before batching, only in the actor's pipeline.
+
+Both are deliberately small next to the +1 success. Two caveats worth knowing: the
+smoothness term is a per-step **bonus** (≥0), so in principle a frozen policy could
+farm it — the sparse reward and the episode time limit are what stop that, which is
+why the weight stays tiny. And these shaping terms apply to *new* online transitions
+only; warm-started transitions from older recordings carry whatever reward they were
+logged with, so a large shaping change is a reason to run `--fresh`.
+
 ### YOLO grasp reward
 
 `GripperHoldYoloGraspRewardStep` (in `~/lerobot`'s `processor/hil_processor.py`,

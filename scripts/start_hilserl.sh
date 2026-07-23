@@ -256,6 +256,7 @@ ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
 	until (exec 3<>/dev/tcp/127.0.0.1/$LEARNER_PORT) 2>/dev/null; do sleep 1; done; \
 	exec 3>&-; echo 'learner up, starting actor'; \
 	PIPER_FG_DIR=$(printf '%q' "$FG_DIR") PIPER_FG_PORT=$FG_PORT PIPER_WARM_START_POLICY=$WARM_POLICY \
+	PIPER_SMOOTH_WEIGHT=${PIPER_SMOOTH_WEIGHT:-0.005} PIPER_SMOOTH_SCALE=${PIPER_SMOOTH_SCALE:-0.5} \
 	python scripts/run_sac_actor.py --config_path $CONFIG" actor)"
 TB_CMD="$(wrap "tensorboard --logdir $TB_LOGDIR --port $TB_PORT" tensorboard)"
 

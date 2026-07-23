@@ -36,6 +36,7 @@ def apply_lerobot_patches() -> None:
     _foxglove_episode_logging(gm)
     _warm_start_replay_buffer()
     _warm_start_policy_weights()
+    _action_smoothness_reward(gm)
     _skip_replay_buffer_dump()
 
 
@@ -233,6 +234,57 @@ def _warm_start_replay_buffer() -> None:
 
     initialize_replay_buffer._piper_warm_start = True
     _learner.initialize_replay_buffer = initialize_replay_buffer
+
+
+def _action_smoothness_reward(gm) -> None:
+    """Add the action-smoothness shaping term to the env reward pipeline.
+
+    ``make_processors`` builds the env pipeline that ends with the sparse YOLO grasp
+    reward, then ``AddBatchDimensionProcessorStep`` / ``DeviceProcessorStep``. We
+    insert the smoothness step just before batching, so it sees the plain (unbatched,
+    CPU) transition and its ``complementary_data['teleop_action']`` -- the normalized
+    policy action. Only the actor builds this pipeline, so the learner is untouched.
+
+    No-op when the weight is <= 0 (``PIPER_SMOOTH_WEIGHT=0``).
+    """
+    import logging
+    import os
+
+    if float(os.environ.get("PIPER_SMOOTH_WEIGHT", "0.005")) <= 0.0:
+        logging.getLogger(__name__).info("[REWARD] action-smoothness shaping off (PIPER_SMOOTH_WEIGHT<=0)")
+        return
+
+    if getattr(gm.make_processors, "_piper_smoothness", False):
+        return
+
+    from lerobot.processor.batch_processor import AddBatchDimensionProcessorStep
+
+    from .reward_shaping import ActionSmoothnessRewardStep
+
+    _orig_make_processors = gm.make_processors
+    log = logging.getLogger(__name__)
+
+    def make_processors(*args, **kwargs):
+        env_processor, action_processor = _orig_make_processors(*args, **kwargs)
+        try:
+            steps = env_processor.steps
+            step = ActionSmoothnessRewardStep()
+            index = next(
+                (i for i, s in enumerate(steps) if isinstance(s, AddBatchDimensionProcessorStep)),
+                len(steps),
+            )
+            steps.insert(index, step)
+            log.info(
+                "[REWARD] action-smoothness shaping on: weight=%.4g scale=%.4g (exp kernel on Δaction)",
+                step.weight,
+                step.scale,
+            )
+        except Exception as exc:  # noqa: BLE001 - shaping must never break env construction
+            log.warning("[REWARD] could not add smoothness shaping (%s: %s)", type(exc).__name__, exc)
+        return env_processor, action_processor
+
+    make_processors._piper_smoothness = True
+    gm.make_processors = make_processors
 
 
 def _warm_start_policy_weights() -> None:
