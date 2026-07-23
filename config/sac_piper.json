@@ -201,7 +201,7 @@
     "image_encoder_hidden_dim": 32,
     "shared_encoder": true,
     "online_steps": 1000000,
-    "online_buffer_capacity": 15000,
+    "online_buffer_capacity": 30000,
     "offline_buffer_capacity": 10000,
     "online_step_before_learning": 100,
     "state_encoder_hidden_dim": 256,

@@ -431,6 +431,16 @@ The one thing this gives up is `resume: true`, which restores the buffer from th
 export; warm start covers the same ground from recordings. `PIPER_SAVE_BUFFER=1`
 restores the old behaviour if you need a genuine resume.
 
+**A `latest` policy is also saved every learning step.** The stepped checkpoints only
+land every `save_freq` steps, so the newest weights on disk — what policy warm start
+loads next run — could otherwise lag by up to that many steps. So after every
+optimization step the learner refreshes a single
+`<output_dir>/checkpoints/latest/pretrained_model`. Only the weights are rewritten per
+step (~3-5 ms, measured, versus a ~270 ms step budget at ~3.7 Hz); the config and
+processors are static and written once. Warm start finds it by modification time, so
+it always loads the freshest policy. `PIPER_SAVE_LATEST_EVERY=N` throttles it (e.g. 10
+to save every tenth step), `0` disables. This runs only in the learner.
+
 The MCAP recordings are the source rather than learner checkpoints, for two reasons:
 they store the *processed* observation (128² images, the same 7-dim state and action
 the policy saw), so a replayed transition is exactly what the actor sent; and they

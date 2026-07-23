@@ -37,6 +37,7 @@ def apply_lerobot_patches() -> None:
     _warm_start_replay_buffer()
     _warm_start_policy_weights()
     _action_smoothness_reward(gm)
+    _save_latest_policy()
     _skip_replay_buffer_dump()
 
 
@@ -234,6 +235,94 @@ def _warm_start_replay_buffer() -> None:
 
     initialize_replay_buffer._piper_warm_start = True
     _learner.initialize_replay_buffer = initialize_replay_buffer
+
+
+def _save_latest_policy() -> None:
+    """Persist the freshest policy after every learning step (learner only).
+
+    The stock learner only writes a checkpoint every ``save_freq`` steps, so the
+    newest weights on disk -- what policy warm start loads next run -- can lag by up
+    to ``save_freq`` optimization steps. This keeps a single, always-current
+    ``<output_dir>/checkpoints/latest/pretrained_model`` refreshed each step.
+
+    Only the weights are rewritten per step (~3-5 ms, measured); the config and the
+    pre/post processors do not change during training and are written once. `training_step`
+    runs only in the learner, so this never touches the actor.
+
+    ``PIPER_SAVE_LATEST_EVERY`` (default 1) throttles it; 0 disables. cfg and the
+    processors are captured from the learner functions that receive them, both of
+    which run once before the training loop.
+    """
+    import logging
+    import os
+    from pathlib import Path
+
+    every = int(os.environ.get("PIPER_SAVE_LATEST_EVERY", "1"))
+    if every <= 0:
+        logging.getLogger(__name__).info("[CHECKPOINT] latest-policy saving disabled (PIPER_SAVE_LATEST_EVERY=0)")
+        return
+
+    import lerobot.rl.learner as _learner
+    from lerobot.rl.trainer import RLTrainer
+
+    if getattr(RLTrainer.training_step, "_piper_save_latest", False):
+        return
+
+    log = logging.getLogger(__name__)
+    state: dict[str, Any] = {"cfg": None, "pre": None, "post": None, "wrote_once": False, "n": 0, "warned": False}
+
+    # Capture cfg from initialize_replay_buffer(cfg, ...) -- always called once at startup.
+    _orig_irb = _learner.initialize_replay_buffer
+
+    def initialize_replay_buffer(cfg, *args, **kwargs):
+        state["cfg"] = cfg
+        return _orig_irb(cfg, *args, **kwargs)
+
+    _learner.initialize_replay_buffer = initialize_replay_buffer
+
+    # Capture the processors from make_pre_post_processors (imported by value into learner).
+    _orig_mpp = _learner.make_pre_post_processors
+
+    def make_pre_post_processors(*args, **kwargs):
+        pre, post = _orig_mpp(*args, **kwargs)
+        state["pre"], state["post"] = pre, post
+        return pre, post
+
+    _learner.make_pre_post_processors = make_pre_post_processors
+
+    _orig_step = RLTrainer.training_step
+
+    def training_step(self):
+        stats = _orig_step(self)
+        state["n"] += 1
+        if state["n"] % every == 0:
+            try:
+                cfg = state["cfg"]
+                policy = getattr(self.algorithm, "policy", None)
+                if cfg is not None and getattr(cfg, "output_dir", None) and policy is not None:
+                    latest = Path(cfg.output_dir) / "checkpoints" / "latest" / "pretrained_model"
+                    latest.mkdir(parents=True, exist_ok=True)
+                    policy.save_pretrained(latest)
+                    if not state["wrote_once"]:  # config + processors are static during training
+                        cfg.save_pretrained(latest)
+                        if state["pre"] is not None:
+                            state["pre"].save_pretrained(latest)
+                        if state["post"] is not None:
+                            state["post"].save_pretrained(latest)
+                        state["wrote_once"] = True
+                        log.info("[CHECKPOINT] saving latest policy every %d step(s) -> %s", every, latest)
+            except Exception as exc:  # noqa: BLE001 - saving must never kill training
+                if not state["warned"]:
+                    state["warned"] = True
+                    log.warning("[CHECKPOINT] latest-policy save failed (%s: %s)", type(exc).__name__, exc)
+        return stats
+
+    training_step._piper_save_latest = True
+    # Two patches wrap training_step; carry the other's guard forward so the outermost
+    # function reflects both and a re-apply skips both instead of double-wrapping.
+    if getattr(_orig_step, "_piper_verbose", False):
+        training_step._piper_verbose = True
+    RLTrainer.training_step = training_step
 
 
 def _action_smoothness_reward(gm) -> None:
@@ -519,6 +608,8 @@ def _informative_learner_logging() -> None:
             return stats
 
         training_step._piper_verbose = True
+        if getattr(_orig_training_step, "_piper_save_latest", False):
+            training_step._piper_save_latest = True
         RLTrainer.training_step = training_step
 
     # --- 3. one line per finished episode ---

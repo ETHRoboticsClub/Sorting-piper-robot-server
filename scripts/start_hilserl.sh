@@ -249,7 +249,7 @@ mkdir -p "$FG_DIR"
 wrap() { printf 'cd %q && source %q && conda activate %q && %s; echo; echo "[%s exited -- press enter to close]"; read -r _' \
 	"$REPO_ROOT" "$CONDA_SH" "$ENV_NAME" "$1" "$2"; }
 
-LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START PIPER_WARM_START_POLICY=$WARM_POLICY python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
+LEARNER_CMD="$(wrap "PIPER_WARM_START=$WARM_START PIPER_WARM_START_POLICY=$WARM_POLICY PIPER_SAVE_LATEST_EVERY=${PIPER_SAVE_LATEST_EVERY:-1} python scripts/run_sac_learner.py --config_path $CONFIG" learner)"
 # The actor must not start before the learner is serving, or it fails to connect.
 # PIPER_FG_DIR is fixed here so the episode recordings land somewhere predictable.
 ACTOR_CMD="$(wrap "echo 'waiting for learner on port $LEARNER_PORT ...'; \
