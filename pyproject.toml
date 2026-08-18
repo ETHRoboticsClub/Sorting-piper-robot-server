@@ -5,10 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "piper_teleop"
 version = "1.0.0"
-description = "Accurate and High Throughput Remote Teleoperation Control System"
+description = "Teleoperation, data recording, and policy deployment for a single the AgileX Piper arm"
 authors = [
     {name = "Zeno Hamers", email = "zeno@tactilerobotics.ai"},
     {name = "Alex Spiridonov", email = "alex@tactilerobotics.ai"},
+    {name = "Sebastien Steininger", email = "sebastien.devmail@gmail.com"},
 ]
 keywords = ["robotics", "teleoperation", "robot-control"]
 
@@ -16,13 +17,13 @@ dependencies = [
     "opencv-python",
     "pyrealsense2",
     "pygame>=2.5",
-    "pyaml",
+    "PyYAML",
     "meshcat",
     "piper_sdk==0.3.3",
     "lerobot",
 ]
 
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 
 [project.optional-dependencies]
 dev = [
@@ -34,13 +35,9 @@ robotserver = "piper_teleop.robot_server.main:main_cli"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"piper_teleop.web_server" = ["web-ui/**/*"]
-"piper_teleop.robot_server" = ["camera_streaming/calibration/*"] 
-
 [tool.black]
 line-length = 120
-target-version = ['py310']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"
