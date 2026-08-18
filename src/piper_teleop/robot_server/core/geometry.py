@@ -107,14 +107,3 @@ def apply_delta_world_trans_ee_rot(target: np.ndarray, delta: np.ndarray) -> Non
     target[:3, 3] = target[:3, 3] + delta[:3, 3]
     target[:3, :3] = target[:3, :3] @ delta[:3, :3]
 
-
-def convert_to_robot_convention(transform_vr: np.ndarray) -> np.ndarray:
-    """Convert position and quaternion to robot convention."""
-
-    adj_mat = np.array([[0, 0, -1, 0], [-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
-
-    # TODO: figure out what this weird transform is
-    r_adj = xyzrpy2transform(0, 0, 0, -np.pi, 0, -np.pi / 2)
-    transform_robot = adj_mat @ transform_vr
-    transform_robot = np.dot(transform_robot, r_adj)
-    return transform_robot

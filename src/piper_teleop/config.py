@@ -24,7 +24,6 @@ DEFAULT_CONFIG = {
     "robot": {
         "left_arm": {"name": "Left Arm", "enabled": True},
         "right_arm": {"name": "Right Arm", "enabled": True},
-        "vr_to_robot_scale": 1.0,
         "send_interval": 0.05,
         "ground_height": -0.05,
         "ros_joint_state_publisher": {
@@ -35,15 +34,12 @@ DEFAULT_CONFIG = {
     },
     "control": {
         "keyboard": {"enabled": False, "pos_step": 0.01, "angle_step": 5.0, "gripper_step": 10.0},
-        "vr": {"enabled": True},
-        "pybullet": {"enabled": True},
     },
     "paths": {
         "urdf_path": "URDF/Piper/piper_description.urdf",
         "deposit_pose_file": "data/deposit_pose_bin_1.yaml",
         "secondary_deposit_pose_file": "data/deposit_pose_bin_2.yaml",
     },
-    "gripper": {"open_angle": 0.0, "closed_angle": 45.0},
     "ik": {
         "use_reference_poses": False,
         "reference_poses_file": "reference_poses.json",
@@ -52,7 +48,7 @@ DEFAULT_CONFIG = {
         "hysteresis_threshold": 0.01,
         "movement_penalty_weight": 0.01,
     },
-    # Cameras: default is one wrist + one top-down (both monocular, recording = dataset only; use hybrid if you add VR).
+    # Cameras: default is one wrist + one top-down (both monocular, recording = dataset only).
     # Output tensors use 640x480 (common in LeRobot-style datasets). Capture is 1280x720 so a
     # RealSense D455 RGB node can run at native color resolution; frames are resized in code.
     #
@@ -61,22 +57,6 @@ DEFAULT_CONFIG = {
     # `python scripts/find_realsense_cameras.py`. That binds each logical camera
     # to a device deterministically instead of relying on /dev/video* ordering.
     # Optional: realsense_auto_exposure: true|false — if omitted, SDK default is kept.
-    #
-    # VR binocular (stereo) option: use a separate "stereo" entry with type "stereo" (one wide
-    # frame split for left/right eye). You can merge this into config.yaml under cameras: —
-    # typically use topdown XOR stereo for the scene view, not both, unless your VR client
-    # expects multiple streams.
-    # VR_BINOCULAR_STEREO_EXAMPLE = {
-    #     "type": "stereo",
-    #     "mode": "hybrid",
-    #     "fps": "60",
-    #     "frame_width": "640",
-    #     "frame_height": "480",
-    #     "capture_frame_width": "3200",
-    #     "capture_frame_height": "1200",
-    #     "capture_api": cv2.CAP_V4L2,
-    #     "cam_index": "<index of wide stereo device>",
-    # }
     "cameras": {
         "wrist1": {
             "type": "monocular",
@@ -173,7 +153,6 @@ HOST_IP = _config_data["network"]["host_ip"]
 CERTFILE = _config_data["ssl"]["certfile"]
 KEYFILE = _config_data["ssl"]["keyfile"]
 
-VR_TO_ROBOT_SCALE = _config_data["robot"]["vr_to_robot_scale"]
 SEND_INTERVAL = _config_data["robot"]["send_interval"]
 GROUND_HEIGHT = _config_data["robot"]["ground_height"]
 ROS_JOINT_STATE_PUBLISHER = _config_data["robot"].get("ros_joint_state_publisher", {})
@@ -185,9 +164,6 @@ GRIPPER_STEP = _config_data["control"]["keyboard"]["gripper_step"]
 URDF_PATH = _config_data["paths"]["urdf_path"]
 DEPOSIT_POSE_FILE = _config_data["paths"]["deposit_pose_file"]
 SECONDARY_DEPOSIT_POSE_FILE = _config_data["paths"].get("secondary_deposit_pose_file")
-
-GRIPPER_OPEN_ANGLE = _config_data["gripper"]["open_angle"]
-GRIPPER_CLOSED_ANGLE = _config_data["gripper"]["closed_angle"]
 
 # IK Configuration
 USE_REFERENCE_POSES = _config_data["ik"]["use_reference_poses"]
@@ -246,7 +222,6 @@ class TelegripConfig:
     keyfile: str = KEYFILE
 
     # Robot settings
-    vr_to_robot_scale: float = VR_TO_ROBOT_SCALE
     send_interval: float = SEND_INTERVAL
     ground_height: float = GROUND_HEIGHT
 
@@ -277,10 +252,7 @@ class TelegripConfig:
     image_writer_processes = 0
     image_writer_threads = 12
     # Control flags
-    enable_pybullet: bool = True
-    enable_pybullet_gui: bool = True
     enable_robot: bool = True
-    enable_vr: bool = True
     enable_keyboard: bool = False
     enable_gamepad: bool = False
     # When True (CLI --ee-world): gamepad rotation uses world/base frame; False = end-effector frame.
@@ -334,10 +306,6 @@ class TelegripConfig:
     ik_movement_penalty_weight: float = IK_MOVEMENT_PENALTY_WEIGHT
     collision_space_urdf: str | None = IK_COLLISION_SPACE_URDF
 
-    # Gripper settings
-    gripper_open_angle: float = GRIPPER_OPEN_ANGLE
-    gripper_closed_angle: float = GRIPPER_CLOSED_ANGLE
-
     # Keyboard control
     pos_step: float = POS_STEP
     angle_step: float = ANGLE_STEP
@@ -348,8 +316,6 @@ class TelegripConfig:
     camera_streamer_participant: str = "camera-streamer"
     controllers_processing_participant: str = "controllers-processing"
     controllers_publishing_participant: str = "controllers-publishing"
-    vr_viewer_participant: str = "vr-viewer"
-    vr_viewer_debug: bool = True
 
     # Camera configuration
     camera_configs: list[CameraConfig] = field(default_factory=lambda: from_config(_config_data["cameras"]))
