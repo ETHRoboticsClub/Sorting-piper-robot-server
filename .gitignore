@@ -94,3 +94,10 @@ data/
 src/piper_teleop/web_server/nginx/nginx-tactile-teleop.conf
 policy_checkpoint
 datasets/
+
+# session logs, scratch notes, generated guides, classifier dataset
+logs/
+scratch/
+computer_vision/
+policy_training_deployment_guide.html
+policy_training_deployment_guide.pdf
