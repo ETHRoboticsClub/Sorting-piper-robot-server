@@ -295,6 +295,30 @@ lerobot-edit-dataset --repo_id <name> --root <dataset> \
   --operation.type recompute_stats
 ```
 
+#### Trimming episodes to the pickup window (optional)
+
+[`scripts/trim_episodes_to_pickup.py`](scripts/trim_episodes_to_pickup.py) (by Aliser) cuts
+each episode to `[t_close - pre, t_close + post]`, where `t_close` is the first frame the
+gripper closes — dropping long approach segments. It writes a new dataset; the source is
+untouched.
+
+```bash
+# check the detection on one episode first
+python scripts/trim_episodes_to_pickup.py inspect \
+  --src-repo-id <name> --src-root <dataset> --episode 0 --closed-threshold 0.048
+
+# then trim everything
+python scripts/trim_episodes_to_pickup.py trim \
+  --src-repo-id <name> --src-root <dataset> \
+  --dst-repo-id <name>_trimmed --dst-root <output> \
+  --pre 3.0 --post 1.0 --closed-threshold 0.048
+```
+
+> **Override the default `--closed-threshold 0.5`** — it assumes a 0–1 gripper channel. Ours
+> is metres, so every frame reads as closed and episodes get trimmed from frame 0, silently.
+> Use **0.048** for datasets recorded after the gripper calibration (0 → 0.096 m), or
+> **0.035** for older ones (0 → 0.07 raw).
+
 #### Inspecting a dataset
 
 Episode count, frames, features, fps — worth running before anything destructive:
