@@ -14,7 +14,6 @@ robot:
   right_arm:
     name: Right Arm
     enabled: true
-  vr_to_robot_scale: 1.0
   send_interval: 0.05
   ground_height: -0.15
 
