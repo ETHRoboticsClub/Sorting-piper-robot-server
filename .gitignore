@@ -91,7 +91,6 @@ outputs/
 .flake8
 data/
 # generated files
-src/piper_teleop/web_server/nginx/nginx-tactile-teleop.conf
 policy_checkpoint
 datasets/
 
