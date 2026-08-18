@@ -3,6 +3,8 @@
 import time
 from typing import Any, Dict
 
+from .gripper_calibration import TRUE_OPEN_M, to_raw_m, to_true_m
+
 try:
     from piper_sdk import C_PiperInterface_V2
 except ImportError:
@@ -15,7 +17,7 @@ JOINT_LIMITS_RAD = {
 }
 DEG_TO_RAD = 0.017444
 RAD_TO_DEG = 1 / DEG_TO_RAD
-GRIPPER_ANGLE_MAX = 0.07  # 70mm
+GRIPPER_ANGLE_MAX = TRUE_OPEN_M  # true jaw opening at the open stop, see gripper_calibration
 
 
 class PiperSDKInterface:
@@ -26,7 +28,7 @@ class PiperSDKInterface:
         self.piper.ConnectPort()
         while not self.piper.EnablePiper():
             time.sleep(0.01)
-        self.piper.GripperCtrl(0, 1000, 0x01, 0)
+        self.piper.GripperCtrl(round(to_raw_m(0.0) * 1e6), 1000, 0x01, 0)
 
         # Get the min and max positions for each joint and gripper
         angel_status = self.piper.GetAllMotorAngleLimitMaxSpd()
@@ -46,7 +48,7 @@ class PiperSDKInterface:
             joint_angles.append(joint_angle)
 
         gripper_position = min(max(positions[6], 0.0), GRIPPER_ANGLE_MAX)
-        gripper_position_int = round(gripper_position * 1e6)
+        gripper_position_int = round(to_raw_m(gripper_position) * 1e6)
 
         self.piper.MotionCtrl_2(0x01, 0x01, 100, 0x00)
         self.piper.JointCtrl(*joint_angles)
@@ -68,7 +70,7 @@ class PiperSDKInterface:
         }
         obs_dict.update(
             {
-                "joint_6.pos": gripper.gripper_state.grippers_angle / 1000000,
+                "joint_6.pos": to_true_m(gripper.gripper_state.grippers_angle / 1e6),
             }
         )
 

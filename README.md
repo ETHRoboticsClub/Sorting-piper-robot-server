@@ -61,8 +61,8 @@ robotserver --show-cameras --policy --gamepad --record \
 robotserver --show-cameras --policy --gamepad --record \
   --task pet \
   --policy-type act \
-  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/train/2026-06-08_pet_alu_wrist_act/checkpoints/200000/pretrained_model \
-  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-08_PET_ALU_wrist_only
+  --policy-path /home/arc_user/workspaces/Sorting-piper-robot-server/outputs/current_models/pet_and_alu/act/2026-06-08_pet_alu_wrist_act/checkpoints/200000 \
+  --policy-repo-id /home/arc_user/workspaces/Sorting-piper-robot-server/data/1_good_datasets/current_in_use/2026-06-19_pet_alu_wrist_only
 
 # Diffusion Policy — current PET checkpoint
 robotserver --show-cameras --policy --gamepad --record \

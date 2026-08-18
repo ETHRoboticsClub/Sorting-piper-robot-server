@@ -13,6 +13,7 @@ import numpy as np
 import pygame
 
 from piper_teleop.robot_server.arm_goal import ArmGoal
+from piper_teleop.robot_server.core.gripper_calibration import TRUE_OPEN_M
 from piper_teleop.robot_server.core.geometry import (
     apply_delta_world_frame,
     apply_delta_world_trans_ee_rot,
@@ -21,7 +22,7 @@ from piper_teleop.robot_server.core.geometry import (
 
 logger = logging.getLogger(__name__)
 
-GRIPPER_OPEN_M = 0.07
+GRIPPER_OPEN_M = TRUE_OPEN_M  # true jaw opening, see core.gripper_calibration
 
 _BTN_CROSS = 0
 _BTN_CIRCLE = 1

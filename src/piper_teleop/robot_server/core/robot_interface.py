@@ -18,6 +18,7 @@ from piper_teleop.config import NUM_JOINTS, TelegripConfig
 from .geometry import transform2pose, xyzrpy2transform
 from .kinematics import Arm_IK
 from .piper import Piper, PiperConfig
+from .piper_sdk_interface import GRIPPER_ANGLE_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ class RobotInterface:
 
     def set_gripper(self, arm: str, closed: bool):
         """Set gripper state for specified arm."""
-        angle = 0.0 if closed else 0.07
+        angle = 0.0 if closed else GRIPPER_ANGLE_MAX
         self.arm_angles[6] = angle
 
     def return_to_initial_position(self):

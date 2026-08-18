@@ -15,6 +15,7 @@ from piper_teleop.robot_server.keyboard_controller import KeyboardController
 from piper_teleop.utils import get_absolute_path
 
 from .core.geometry import xyzrpy2transform
+from .core.gripper_calibration import TRUE_OPEN_M
 from .core.robot_interface import RobotInterface, arm_angles_to_action_dict
 from .recorder import Recorder
 from .robot_leader import PiperLeader
@@ -22,7 +23,8 @@ from .robot_leader import PiperLeader
 logger = logging.getLogger(__name__)
 
 # Prismatic finger command when gripper is "open" in toggle mode (matches gamepad max gap).
-GRIPPER_FINGER_OPEN_M = 0.07
+# True jaw opening, not the firmware's claimed 0.07 -- see core.gripper_calibration.
+GRIPPER_FINGER_OPEN_M = TRUE_OPEN_M
 
 
 def precise_sleep(duration_s: float) -> None:
